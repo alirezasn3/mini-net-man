@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 
 	goSystemd "github.com/alirezasn3/go-systemd"
@@ -27,22 +29,27 @@ import (
 
 var version = "dev"
 
-const (
-	serviceName   = "mini-net-man"
-	defaultConfig = "/etc/mini-net-man/config.yaml"
-)
+const serviceName = "mini-net-man"
 
 const usage = `usage: mini-net-man [command] [flags]
 
 commands:
   run         start the daemon and web panel (default)
-  install     install and start the systemd service
-  uninstall   stop and remove the systemd service
+  install     set everything up and start it as a systemd service
+  uninstall   stop and remove the systemd service (keeps your config)
   passwd USER set (or create) a panel user's password
   version     print the version
 
-flags (run, passwd):
-  -config PATH   config file (default ` + defaultConfig + `)
+The config file is config.yaml next to this binary unless -config says otherwise.
+
+install flags:
+  -allow IPS     IPs or CIDRs to allow into the panel, comma separated, in
+                 addition to this machine (the default is this machine only)
+  -port N        panel port (default 8080)
+  -config PATH   config file
+
+run and passwd flags:
+  -config PATH   config file
   -mock          run against a fake in-memory kernel (any OS), for trying the UI
 `
 
@@ -82,6 +89,19 @@ type flags struct {
 	rest   []string
 }
 
+// defaultConfigPath is config.yaml in the directory of the running binary
+// (symlinks resolved), so the binary and its settings travel together.
+func defaultConfigPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "config.yaml"
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	return filepath.Join(filepath.Dir(exe), "config.yaml")
+}
+
 func parse(name string, args []string) (flags, error) {
 	var f flags
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
@@ -92,10 +112,13 @@ func parse(name string, args []string) (flags, error) {
 	}
 	f.rest = fs.Args()
 	if f.config == "" {
-		f.config = defaultConfig
+		f.config = defaultConfigPath()
 		if f.mock {
 			f.config = "mock-config.yaml"
 		}
+	}
+	if abs, err := filepath.Abs(f.config); err == nil {
+		f.config = abs
 	}
 	return f, nil
 }
@@ -116,20 +139,12 @@ func run(args []string) error {
 		return errors.New("must run as root (or use -mock to try the UI)")
 	}
 
-	cfg, ok, err := engine.LoadConfig(f.config)
+	cfg, pw, err := ensureConfig(f.config)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", f.config, err)
+		return err
 	}
-	if !ok {
-		pw := randomPassword()
-		if cfg, err = engine.DefaultConfig(pw); err != nil {
-			return err
-		}
-		if err := engine.SaveConfig(f.config, cfg); err != nil {
-			return err
-		}
-		fmt.Printf("\nFirst run: wrote %s\n  panel login:  admin / %s\n  listening on: %s:%d, reachable only from %v\n  (change with `mini-net-man passwd admin`, and widen allowed_ips in the panel or config)\n\n",
-			f.config, pw, cfg.Web.Listen, cfg.Web.Port, cfg.Web.AllowedIPs)
+	if pw != "" {
+		fmt.Print(firstRunNotice(f.config, cfg, pw))
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
@@ -145,25 +160,139 @@ func run(args []string) error {
 	return server.New(eng, web.FS(), f.config, f.mock, log).ListenAndServe(ctx)
 }
 
-func install(args []string) error {
-	f, err := parse("install", args)
+// ensureConfig loads the config, writing a default one (with a random admin
+// password, returned once) if the file does not exist yet.
+func ensureConfig(path string) (cfg model.Config, newPassword string, err error) {
+	cfg, ok, err := engine.LoadConfig(path)
 	if err != nil {
+		return cfg, "", fmt.Errorf("reading %s: %w", path, err)
+	}
+	if ok {
+		return cfg, "", nil
+	}
+	pw := randomPassword()
+	if cfg, err = engine.DefaultConfig(pw); err != nil {
+		return cfg, "", err
+	}
+	if err := engine.SaveConfig(path, cfg); err != nil {
+		return cfg, "", err
+	}
+	return cfg, pw, nil
+}
+
+func listenText(cfg model.Config) string {
+	if ip := cfg.Web.Listen; ip == "0.0.0.0" || ip == "::" || ip == "" {
+		return fmt.Sprintf("port %d on all addresses", cfg.Web.Port)
+	}
+	return fmt.Sprintf("%s:%d", cfg.Web.Listen, cfg.Web.Port)
+}
+
+func firstRunNotice(path string, cfg model.Config, pw string) string {
+	return fmt.Sprintf("\nCreated %s\n  login:    admin / %s   (change it with `mini-net-man passwd admin`)\n  panel:    %s\n  allowed:  %s\n\n",
+		path, pw, listenText(cfg), strings.Join(cfg.Web.AllowedIPs, ", "))
+}
+
+// install does everything in one step: config file, systemd unit, start.
+// Running it again after replacing the binary restarts the service on it.
+func install(args []string) error {
+	var allow string
+	var port int
+	fs := flag.NewFlagSet("install", flag.ContinueOnError)
+	cfgFlag := fs.String("config", "", "config file")
+	fs.StringVar(&allow, "allow", "", "allowed IPs or CIDRs, comma separated")
+	fs.IntVar(&port, "port", 0, "panel port")
+	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if runtime.GOOS != "linux" {
+		return errors.New("install only works on Linux (it creates a systemd service)")
+	}
+	if os.Geteuid() != 0 {
+		return errors.New("install needs root: run `sudo ./mini-net-man install`")
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cfg, _ := filepath.Abs(f.config)
-	return goSystemd.CreateService(&goSystemd.Service{
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	cfgPath := *cfgFlag
+	if cfgPath == "" {
+		cfgPath = defaultConfigPath()
+	}
+	if cfgPath, err = filepath.Abs(cfgPath); err != nil {
+		return err
+	}
+
+	cfg, pw, err := ensureConfig(cfgPath)
+	if err != nil {
+		return err
+	}
+	changed := false
+	if allow != "" {
+		// Additive: localhost stays allowed, so an SSH tunnel always works.
+		cfg.Web.AllowedIPs = mergeUnique(cfg.Web.AllowedIPs, splitList(allow))
+		changed = true
+	}
+	if port != 0 {
+		cfg.Web.Port = port
+		changed = true
+	}
+	if changed {
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		if err := engine.SaveConfig(cfgPath, cfg); err != nil {
+			return err
+		}
+	}
+
+	// Replace a running copy so the new binary takes over.
+	if st, err := goSystemd.StatusService(serviceName); err == nil && st != nil && st.Exists {
+		_ = goSystemd.StopService(serviceName)
+	}
+	if err := goSystemd.CreateService(&goSystemd.Service{
 		Name:        serviceName,
 		Description: "mini-net-man network manager",
-		ExecStart:   fmt.Sprintf("%s run -config %s", exe, cfg),
+		ExecStart:   fmt.Sprintf("%s run -config %s", exe, cfgPath),
 		Restart:     "on-failure",
 		RestartSec:  "3s",
 		After:       "network-online.target",
 		Wants:       "network-online.target",
-	})
+	}); err != nil {
+		return err
+	}
+
+	if pw != "" {
+		fmt.Print(firstRunNotice(cfgPath, cfg, pw))
+	} else {
+		fmt.Printf("\nUsing existing config %s\n  panel:    %s\n  allowed:  %s\n\n", cfgPath, listenText(cfg), strings.Join(cfg.Web.AllowedIPs, ", "))
+	}
+	fmt.Printf("Installed and started the %s service, running %s\n", serviceName, exe)
+	fmt.Println("Keep the binary where it is (the service runs it in place); if you move it, run install again.")
+	fmt.Printf("Logs: journalctl -u %s -f     Remove: %s uninstall\n", serviceName, exe)
+	return nil
+}
+
+func mergeUnique(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, x := range append(append([]string{}, a...), b...) {
+		if !seen[x] {
+			seen[x] = true
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }) {
+		out = append(out, p)
+	}
+	return out
 }
 
 func passwd(args []string) error {
@@ -180,7 +309,7 @@ func passwd(args []string) error {
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("%s does not exist yet; run the daemon once first", f.config)
+		return fmt.Errorf("%s does not exist yet; run `mini-net-man install` (or `run`) once first", f.config)
 	}
 	fmt.Fprintf(os.Stderr, "New password for %s: ", user)
 	pw, err := term.ReadPassword(int(os.Stdin.Fd()))

@@ -11,16 +11,27 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 
 IPv4 and IPv6 are both supported. Linux only for the real backend (`-mock` runs anywhere).
 
-## Run
+## Install
+
+Put the binary in its own folder (the config is created beside it), then run `install` as root. That is the whole setup:
 
 ```sh
-make linux                                   # bin/mini-net-man-linux-{amd64,arm64}
-scp bin/mini-net-man-linux-amd64 server:/usr/local/bin/mini-net-man
-ssh server 'mini-net-man install'            # installs and starts the systemd service
-ssh server 'journalctl -u mini-net-man | head'   # first-run admin password is printed here
+ssh server 'mkdir -p ~/mini-net-man'
+scp bin/mini-net-man-linux-amd64 server:mini-net-man/mini-net-man
+ssh -t server 'sudo ~/mini-net-man/mini-net-man install'
 ```
 
-The config lives at `/etc/mini-net-man/config.yaml`. The panel listens on `web.listen:web.port` and answers only addresses in `web.allowed_ips` (default: localhost). Change the password with `mini-net-man passwd admin`.
+`install` creates `config.yaml` **next to the binary** (unless you pass `-config`), writes and starts a systemd service that runs the binary in place, and prints the login. Re-run it after replacing the binary to restart on the new one. `uninstall` removes the service and keeps your config.
+
+By default only the server itself may open the panel, so reach it through an SSH tunnel (`ssh -L 8080:127.0.0.1:8080 server`, then browse to `http://127.0.0.1:8080`). To open it to your own address instead:
+
+```sh
+sudo ~/mini-net-man/mini-net-man install -allow 203.0.113.7 -port 8080
+```
+
+`-allow` takes IPs or CIDRs, comma separated, and adds to localhost rather than replacing it. If ufw is active you also need `ufw allow from 203.0.113.7 to any port 8080`. Change the password with `mini-net-man passwd admin`.
+
+To try it first without installing anything, run `sudo ~/mini-net-man/mini-net-man run` in the foreground. Stopping it does not undo the rules it created.
 
 ## IPv6
 
