@@ -40,7 +40,7 @@
     <div>
       <label class="label" for="ips">Allowed client IPs (one per line, IPs or CIDRs)</label>
       <textarea id="ips" rows="4" class="input mono" bind:value={web.allowed_ips} placeholder="203.0.113.7&#10;198.51.100.0/24"></textarea>
-      <p class="mt-1 text-xs text-slate-500">Other addresses get no answer at all. An empty list allows only localhost.</p>
+      <p class="mt-1 text-xs text-slate-500">IPv4 or IPv6. Other addresses get no answer at all. An empty list allows only localhost. To serve IPv6, set the listen address to <span class="mono">::</span> (dual-stack).</p>
     </div>
     <p class="text-xs text-slate-500">{web.tls ? 'TLS is on (set in the config file).' : 'Served over plain HTTP. Set tls_cert and tls_key in the config file, or put it behind something that terminates TLS.'}</p>
     <button class="btn btn-primary">Save</button>

@@ -101,20 +101,38 @@ func (e *Engine) Run(ctx context.Context) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	var debounce <-chan time.Time
+	var recent []time.Time // event-driven reconciles that changed something
+	var quietUntil time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-events:
 			// A burst of netlink events becomes one reconcile.
-			if debounce == nil {
+			if debounce == nil && time.Now().After(quietUntil) {
 				debounce = time.After(500 * time.Millisecond)
 			}
 		case <-debounce:
 			debounce = nil
 			e.mu.Lock()
-			e.applyLocked(false)
+			changed := e.applyLocked(false)
 			e.mu.Unlock()
+			if changed == 0 {
+				recent = nil
+				break
+			}
+			// Our own changes produce kernel events, which is fine once. If
+			// every pass keeps changing something, something isn't converging:
+			// stop reacting for a while rather than spin.
+			now := time.Now()
+			recent = append(recent, now)
+			for len(recent) > 0 && now.Sub(recent[0]) > 10*time.Second {
+				recent = recent[1:]
+			}
+			if len(recent) >= 6 {
+				e.log.Error("reconcile keeps changing the kernel; pausing event-driven reconciles for 30s")
+				quietUntil, recent = now.Add(30*time.Second), nil
+			}
 		case <-tick.C:
 			e.expireSafe()
 		}
@@ -149,6 +167,14 @@ func (e *Engine) Reapply() []model.Issue {
 	defer e.mu.Unlock()
 	e.applyLocked(true)
 	return append([]model.Issue(nil), e.issues...)
+}
+
+// Converge runs one non-forced reconcile and returns how many kernel changes
+// it made. After a successful apply it should be 0; tests rely on that.
+func (e *Engine) Converge() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.applyLocked(false)
 }
 
 // Desired returns the expanded desired state (manual + generated items).
@@ -265,8 +291,11 @@ func addrKey(a kernel.Addr) string { return a.Interface + "|" + a.Address }
 
 // applyLocked makes the kernel match the config. It never stops at the first
 // failure: each item that can't be applied becomes an Issue.
-func (e *Engine) applyLocked(force bool) {
+//
+// It returns how many kernel changes it made.
+func (e *Engine) applyLocked(force bool) int {
 	var issues []model.Issue
+	muts := 0
 	add := func(kind, id string, err error) {
 		if err != nil {
 			issues = append(issues, model.Issue{Kind: kind, ID: id, Message: err.Error()})
@@ -274,12 +303,20 @@ func (e *Engine) applyLocked(force bool) {
 	}
 	d := e.desiredLocked()
 
-	if e.cfg.Sysctl.IPForward != nil {
-		cur, err := e.k.IPForward()
-		if err == nil && cur != *e.cfg.Sysctl.IPForward {
-			err = e.k.SetIPForward(*e.cfg.Sysctl.IPForward)
+	for _, f := range []struct {
+		v6   bool
+		want *bool
+		id   string
+	}{{false, e.cfg.Sysctl.IPForward, "ip_forward"}, {true, e.cfg.Sysctl.IPv6Forward, "ipv6_forward"}} {
+		if f.want == nil {
+			continue
 		}
-		add("sysctl", "ip_forward", err)
+		cur, err := e.k.IPForward(f.v6)
+		if err == nil && cur != *f.want {
+			muts++
+			err = e.k.SetIPForward(f.v6, *f.want)
+		}
+		add("sysctl", f.id, err)
 	}
 
 	// Addresses.
@@ -297,11 +334,13 @@ func (e *Engine) applyLocked(force bool) {
 		want[addrKey(ka)] = true
 		applied = append(applied, ka)
 		if !have[addrKey(ka)] {
+			muts++
 			add("address", a.ID, e.k.AddAddr(ka.Interface, ka.Address))
 		}
 	}
 	for _, p := range e.lastAddr {
 		if !want[addrKey(p)] && have[addrKey(p)] {
+			muts++
 			add("address", "", e.k.DelAddr(p.Interface, p.Address))
 		}
 	}
@@ -321,6 +360,7 @@ func (e *Engine) applyLocked(force bool) {
 			continue
 		}
 		if _, ok := desiredRoutes[r.Key()]; !ok {
+			muts++
 			add("route", "", e.k.DelRoute(r.Route))
 		} else {
 			ownedSig[r.Key()] = r.Sig()
@@ -330,6 +370,7 @@ func (e *Engine) applyLocked(force bool) {
 		if ownedSig[key] == r.Sig() {
 			continue
 		}
+		muts++
 		add("route", r.ID, e.k.ReplaceRoute(r))
 	}
 
@@ -346,6 +387,7 @@ func (e *Engine) applyLocked(force bool) {
 		switch {
 		case r.Owned:
 			if _, ok := desiredRules[r.Key()]; !ok {
+				muts++
 				add("rule", "", e.k.DelRule(r.Rule))
 			} else {
 				ownedRule[r.Key()] = true
@@ -358,6 +400,7 @@ func (e *Engine) applyLocked(force bool) {
 		if ownedRule[key] {
 			continue
 		}
+		muts++
 		if foreignRule[key] {
 			// Same rule made by hand: take it over.
 			_ = e.k.DelRule(r)
@@ -368,6 +411,7 @@ func (e *Engine) applyLocked(force bool) {
 	// Firewall: replaced atomically as one table.
 	text := kernel.RenderNFT(d.Firewall)
 	if force || text != e.lastNFT {
+		muts++
 		if err := e.k.ApplyFirewall(d.Firewall); err != nil {
 			add("firewall", "", err)
 		} else {
@@ -379,6 +423,7 @@ func (e *Engine) applyLocked(force bool) {
 	for _, is := range issues {
 		e.log.Warn("apply issue", "kind", is.Kind, "id", is.ID, "err", is.Message)
 	}
+	return muts
 }
 
 // String helps debugging.

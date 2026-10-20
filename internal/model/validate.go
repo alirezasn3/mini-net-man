@@ -36,33 +36,137 @@ func TableName(n int) string {
 	return strconv.Itoa(n)
 }
 
-// ParseCIDR accepts "a.b.c.d", "a.b.c.d/n" and (if allowDefault) "default".
-// A bare IP becomes a /32. Host bits are kept (as `ip addr` needs them).
+// ParseCIDR accepts an IPv4 or IPv6 address or network, and (if allowDefault)
+// "default" (the IPv4 default). A bare IP becomes a /32 or /128. Host bits
+// are kept.
 func ParseCIDR(s string, allowDefault bool) (*net.IPNet, error) {
 	s = strings.TrimSpace(s)
-	if allowDefault && (s == "default" || s == "0.0.0.0/0") {
-		return &net.IPNet{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)}, nil
+	if allowDefault && s == "default" {
+		s = "0.0.0.0/0"
 	}
+	v6 := strings.Contains(s, ":")
 	if !strings.Contains(s, "/") {
-		s += "/32"
+		if v6 {
+			s += "/128"
+		} else {
+			s += "/32"
+		}
 	}
 	ip, n, err := net.ParseCIDR(s)
-	if err != nil || ip.To4() == nil {
-		return nil, fmt.Errorf("invalid IPv4 address or network %q", s)
+	if err != nil {
+		return nil, fmt.Errorf("invalid IP address or network %q", s)
 	}
-	n.IP = n.IP.To4()
+	if v6 {
+		if ip.To4() != nil && !strings.Contains(strings.SplitN(s, "/", 2)[0], "::") {
+			return nil, fmt.Errorf("invalid IPv6 address %q", s)
+		}
+		n.IP = n.IP.To16()
+	} else {
+		n.IP = n.IP.To4()
+	}
 	return n, nil
 }
+
+// IsV6 reports whether n is an IPv6 network.
+func IsV6(n *net.IPNet) bool { return n.IP.To4() == nil }
 
 // ParseAddr is like ParseCIDR but keeps the host part: 10.0.0.1/16 -> ip 10.0.0.1 mask /16.
 func ParseAddr(s string) (*net.IPNet, error) {
 	p, err := netip.ParsePrefix(strings.TrimSpace(s))
-	if err != nil || !p.Addr().Is4() {
-		return nil, fmt.Errorf("invalid IPv4 address %q (use ip/prefix, e.g. 10.0.0.1/24)", s)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address %q (use ip/prefix, e.g. 10.0.0.1/24 or fd00::1/64)", s)
 	}
-	ip := p.Addr().As4()
-	return &net.IPNet{IP: ip[:], Mask: net.CIDRMask(p.Bits(), 32)}, nil
+	a := p.Addr().Unmap()
+	if p.Addr().Is4In6() {
+		return nil, fmt.Errorf("invalid address %q", s)
+	}
+	if a.Is4() {
+		ip := a.As4()
+		return &net.IPNet{IP: ip[:], Mask: net.CIDRMask(p.Bits(), 32)}, nil
+	}
+	ip := a.As16()
+	return &net.IPNet{IP: ip[:], Mask: net.CIDRMask(p.Bits(), 128)}, nil
 }
+
+// V6 reports the family of a route: from its destination, or from the
+// gateway when the destination is the generic "default".
+func (r Route) V6() bool {
+	if d := strings.TrimSpace(r.Dst); d != "" && d != "default" {
+		if n, err := ParseCIDR(d, true); err == nil {
+			return IsV6(n)
+		}
+	}
+	return strings.Contains(r.Gateway, ":")
+}
+
+// NormDst is the destination with "default" resolved to its family's zero prefix.
+func (r Route) NormDst() string {
+	if strings.TrimSpace(r.Dst) == "default" && r.V6() {
+		return "::/0"
+	}
+	return r.Dst
+}
+
+// V6 reports the family of a rule: explicit, else from src/dst, else IPv4.
+func (r Rule) V6() bool {
+	switch r.Family {
+	case "ipv6":
+		return true
+	case "ipv4":
+		return false
+	}
+	for _, s := range []string{r.Src, r.Dst} {
+		if n, err := ParseCIDR(s, false); err == nil && s != "" {
+			return IsV6(n)
+		}
+	}
+	return false
+}
+
+// EffFamily is "ipv4", "ipv6", or "" when the rule applies to both. It is
+// explicit if set, else inferred from the addresses it mentions.
+func (r FWRule) EffFamily() string {
+	if r.Family != "" {
+		return r.Family
+	}
+	for _, s := range []string{r.Src, r.Dst, r.ToAddr} {
+		if s == "" {
+			continue
+		}
+		if n, err := ParseCIDR(s, false); err == nil {
+			if IsV6(n) {
+				return "ipv6"
+			}
+			return "ipv4"
+		}
+	}
+	return ""
+}
+
+// checkFamilies makes sure every address given belongs to the same family.
+func checkFamilies(want string, addrs ...string) error {
+	for _, s := range addrs {
+		if s == "" {
+			continue
+		}
+		n, err := ParseCIDR(s, false)
+		if err != nil {
+			return err
+		}
+		got := "ipv4"
+		if IsV6(n) {
+			got = "ipv6"
+		}
+		if want == "" {
+			want = got
+		} else if want != got {
+			return fmt.Errorf("%s is %s but the rest of the entry is %s", s, got, want)
+		}
+	}
+	return nil
+}
+
+func validFamily(f string) bool { return f == "" || f == "ipv4" || f == "ipv6" }
 
 func validIface(s string) bool {
 	return s == "" || (len(s) <= 15 && !strings.ContainsAny(s, " /\t\n\"'"))
@@ -81,8 +185,17 @@ func (r Route) Validate() error {
 	if _, err := ParseCIDR(r.Dst, true); err != nil {
 		return err
 	}
-	if r.Gateway != "" && net.ParseIP(r.Gateway).To4() == nil {
-		return fmt.Errorf("invalid gateway %q", r.Gateway)
+	if r.Gateway != "" {
+		if net.ParseIP(r.Gateway) == nil {
+			return fmt.Errorf("invalid gateway %q", r.Gateway)
+		}
+		want := "ipv4"
+		if r.V6() {
+			want = "ipv6"
+		}
+		if err := checkFamilies(want, r.Gateway); err != nil {
+			return fmt.Errorf("gateway: %w", err)
+		}
 	}
 	if !validIface(r.Dev) {
 		return fmt.Errorf("invalid interface %q", r.Dev)
@@ -109,12 +222,11 @@ func (r Rule) Validate() error {
 	if r.Priority < 0 || r.Priority > 32765 {
 		return fmt.Errorf("priority must be between 0 and 32765")
 	}
-	for _, s := range []string{r.Src, r.Dst} {
-		if s != "" {
-			if _, err := ParseCIDR(s, false); err != nil {
-				return err
-			}
-		}
+	if !validFamily(r.Family) {
+		return fmt.Errorf("invalid family %q", r.Family)
+	}
+	if err := checkFamilies(r.Family, r.Src, r.Dst); err != nil {
+		return err
 	}
 	if !validIface(r.Iif) || !validIface(r.Oif) {
 		return fmt.Errorf("invalid interface name")
@@ -173,31 +285,30 @@ func (r FWRule) Validate() error {
 		if r.Chain != ChainPostrouting {
 			return fmt.Errorf("snat only works in srcnat")
 		}
-		if net.ParseIP(r.ToAddr).To4() == nil {
+		if net.ParseIP(r.ToAddr) == nil {
 			return fmt.Errorf("snat needs to_addr")
 		}
 	case "dnat":
 		if r.Chain != ChainPrerouting {
 			return fmt.Errorf("dnat only works in dstnat")
 		}
-		if net.ParseIP(r.ToAddr).To4() == nil {
+		if net.ParseIP(r.ToAddr) == nil {
 			return fmt.Errorf("dnat needs to_addr")
 		}
 	default:
 		return fmt.Errorf("invalid action %q", r.Action)
 	}
-	for _, s := range []string{r.Src, r.Dst} {
-		if s != "" {
-			if _, err := ParseCIDR(s, false); err != nil {
-				return err
-			}
-		}
+	if !validFamily(r.Family) {
+		return fmt.Errorf("invalid family %q", r.Family)
+	}
+	if err := checkFamilies(r.Family, r.Src, r.Dst, r.ToAddr); err != nil {
+		return err
 	}
 	if !validIface(r.InIface) || !validIface(r.OutIface) {
 		return fmt.Errorf("invalid interface name")
 	}
 	switch r.Proto {
-	case "", "tcp", "udp", "icmp":
+	case "", "tcp", "udp", "icmp", "icmpv6":
 	default:
 		return fmt.Errorf("invalid protocol %q", r.Proto)
 	}

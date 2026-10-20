@@ -7,7 +7,9 @@ import (
 	"github.com/alirezasn3/mini-net-man/internal/model"
 )
 
-// TableName is the nftables table mini-net-man owns.
+// TableName is the nftables table mini-net-man owns. It lives in the dual
+// stack `inet` family; an IPv4-only `ip` table of the same name, which early
+// versions created, is removed whenever the firewall is applied.
 const TableName = "mini-net-man"
 
 type chainDef struct {
@@ -16,7 +18,7 @@ type chainDef struct {
 	policy            func(model.FirewallPolicy) string
 }
 
-// Chains lists the base chains in the order they are created.
+// chainDefs lists the base chains in the order they are created.
 var chainDefs = []chainDef{
 	{model.ChainPrerouting, "nat", "prerouting", -100, nil},
 	{model.ChainInput, "filter", "input", 0, func(p model.FirewallPolicy) string { return p.Input }},
@@ -36,7 +38,7 @@ func policyOr(s string) string {
 // preview; the Linux backend builds the same ruleset natively.
 func RenderNFT(fw model.Firewall) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "table ip %s {\n", TableName)
+	fmt.Fprintf(&b, "table inet %s {\n", TableName)
 	for _, c := range chainDefs {
 		pol := "accept"
 		if c.policy != nil {
@@ -47,7 +49,10 @@ func RenderNFT(fw model.Firewall) string {
 			if r.Disabled || r.Chain != c.name {
 				continue
 			}
-			fmt.Fprintf(&b, "\t\t%s\n", renderRule(r))
+			// Port lists become one rule per alternative, as in the kernel.
+			for _, line := range renderRule(r) {
+				fmt.Fprintf(&b, "\t\t%s\n", line)
+			}
 		}
 		b.WriteString("\t}\n")
 	}
@@ -55,65 +60,93 @@ func RenderNFT(fw model.Firewall) string {
 	return b.String()
 }
 
-func renderRule(r model.FWRule) string {
-	var p []string
+func splitPorts(s string) []string {
+	if s == "" {
+		return []string{""}
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		out = append(out, strings.TrimSpace(p))
+	}
+	return out
+}
+
+func renderRule(r model.FWRule) []string {
+	var head []string
+	fam := r.EffFamily()
+	// An address match already pins the family in nft syntax; otherwise say it.
+	if fam != "" && r.Src == "" && r.Dst == "" && r.ToAddr == "" {
+		head = append(head, "meta nfproto "+fam)
+	}
+	ipw := map[string]string{"ipv4": "ip", "ipv6": "ip6"}[fam]
 	if r.InIface != "" {
-		p = append(p, fmt.Sprintf("iifname %q", r.InIface))
+		head = append(head, fmt.Sprintf("iifname %q", r.InIface))
 	}
 	if r.OutIface != "" {
-		p = append(p, fmt.Sprintf("oifname %q", r.OutIface))
+		head = append(head, fmt.Sprintf("oifname %q", r.OutIface))
 	}
 	if r.Src != "" {
-		p = append(p, "ip saddr "+normNet(r.Src))
+		head = append(head, ipw+" saddr "+normNet(r.Src))
 	}
 	if r.Dst != "" {
-		p = append(p, "ip daddr "+normNet(r.Dst))
+		head = append(head, ipw+" daddr "+normNet(r.Dst))
 	}
+	hasPorts := (r.Proto == "tcp" || r.Proto == "udp") && (r.SrcPort != "" || r.DstPort != "")
 	switch r.Proto {
 	case "tcp", "udp":
-		if r.SrcPort != "" {
-			p = append(p, fmt.Sprintf("%s sport %s", r.Proto, portSet(r.SrcPort)))
-		}
-		if r.DstPort != "" {
-			p = append(p, fmt.Sprintf("%s dport %s", r.Proto, portSet(r.DstPort)))
-		}
-		if r.SrcPort == "" && r.DstPort == "" {
-			p = append(p, "meta l4proto "+r.Proto)
+		if !hasPorts {
+			head = append(head, "meta l4proto "+r.Proto)
 		}
 	case "icmp":
-		p = append(p, "meta l4proto icmp")
+		head = append(head, "meta l4proto icmp")
+	case "icmpv6":
+		head = append(head, "meta l4proto ipv6-icmp")
 	}
+	var tail []string
 	if r.ConnState != "" {
-		p = append(p, "ct state "+strings.ReplaceAll(strings.ReplaceAll(r.ConnState, " ", ""), ",", ","))
+		tail = append(tail, "ct state "+strings.ReplaceAll(r.ConnState, " ", ""))
 	}
 	switch r.Action {
 	case "masquerade":
-		p = append(p, "masquerade")
+		tail = append(tail, "masquerade")
 	case "dnat", "snat":
 		t := r.ToAddr
 		if r.ToPort != 0 {
-			t = fmt.Sprintf("%s:%d", t, r.ToPort)
+			if fam == "ipv6" {
+				t = fmt.Sprintf("[%s]:%d", t, r.ToPort)
+			} else {
+				t = fmt.Sprintf("%s:%d", t, r.ToPort)
+			}
 		}
-		p = append(p, r.Action+" to "+t)
+		tail = append(tail, fmt.Sprintf("%s %s to %s", r.Action, ipw, t))
 	default:
-		p = append(p, r.Action)
+		tail = append(tail, r.Action)
 	}
 	if r.Comment != "" {
-		p = append(p, fmt.Sprintf("comment %q", r.Comment))
+		tail = append(tail, fmt.Sprintf("comment %q", r.Comment))
 	}
-	return strings.Join(p, " ")
-}
 
-func portSet(s string) string {
-	if strings.Contains(s, ",") {
-		return "{ " + strings.ReplaceAll(s, ",", ", ") + " }"
+	var out []string
+	for _, sp := range splitPorts(r.SrcPort) {
+		for _, dp := range splitPorts(r.DstPort) {
+			parts := append([]string{}, head...)
+			if hasPorts {
+				if sp != "" {
+					parts = append(parts, fmt.Sprintf("%s sport %s", r.Proto, sp))
+				}
+				if dp != "" {
+					parts = append(parts, fmt.Sprintf("%s dport %s", r.Proto, dp))
+				}
+			}
+			out = append(out, strings.Join(append(parts, tail...), " "))
+		}
 	}
-	return s
+	return out
 }
 
 func normNet(s string) string {
 	if n, err := model.ParseCIDR(s, false); err == nil {
-		if ones, _ := n.Mask.Size(); ones == 32 {
+		if ones, bits := n.Mask.Size(); ones == bits {
 			return n.IP.String()
 		}
 		return n.String()

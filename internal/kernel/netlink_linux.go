@@ -33,12 +33,15 @@ func (Linux) Links() ([]model.Link, error) {
 	if err != nil {
 		return nil, err
 	}
-	addrs, err := netlink.AddrList(nil, netlink.FAMILY_V4)
+	addrs, err := netlink.AddrList(nil, netlink.FAMILY_ALL)
 	if err != nil {
 		return nil, err
 	}
 	byIdx := map[int][]string{}
 	for _, a := range addrs {
+		if a.IP.To4() == nil && a.IP.IsLinkLocalUnicast() {
+			continue // fe80:: addresses are noise in the overview
+		}
 		byIdx[a.LinkIndex] = append(byIdx[a.LinkIndex], a.IPNet.String())
 	}
 	out := make([]model.Link, 0, len(links))
@@ -59,7 +62,7 @@ func (Linux) Links() ([]model.Link, error) {
 }
 
 func (Linux) ListAddrs() ([]Addr, error) {
-	addrs, err := netlink.AddrList(nil, netlink.FAMILY_V4)
+	addrs, err := netlink.AddrList(nil, netlink.FAMILY_ALL)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +113,8 @@ var protoNames = map[netlink.RouteProtocol]string{
 }
 
 func toNetlinkRoute(r model.Route) (*netlink.Route, error) {
-	dst, err := model.ParseCIDR(r.Dst, true)
+	v6 := r.V6()
+	dst, err := model.ParseCIDR(r.NormDst(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -122,11 +126,17 @@ func toNetlinkRoute(r model.Route) (*netlink.Route, error) {
 		Family: netlink.FAMILY_V4, Table: table, Priority: r.Metric,
 		Protocol: Owner, Type: routeTypes[r.Type], Scope: netlink.SCOPE_UNIVERSE,
 	}
-	if ones, _ := dst.Mask.Size(); ones != 0 {
-		nr.Dst = dst
+	if v6 {
+		nr.Family = netlink.FAMILY_V6
 	}
+	// Always send the destination, even for a default route: netlink refuses
+	// a route that has only an interface and no Dst, Src or Gw.
+	nr.Dst = dst
 	if r.Gateway != "" {
-		nr.Gw = net.ParseIP(r.Gateway).To4()
+		nr.Gw = net.ParseIP(r.Gateway)
+		if !v6 {
+			nr.Gw = nr.Gw.To4()
+		}
 	}
 	if r.Dev != "" {
 		l, err := netlink.LinkByName(r.Dev)
@@ -134,7 +144,8 @@ func toNetlinkRoute(r model.Route) (*netlink.Route, error) {
 			return nil, fmt.Errorf("interface %q: %w", r.Dev, err)
 		}
 		nr.LinkIndex = l.Attrs().Index
-		if nr.Gw == nil && nr.Type == unix.RTN_UNICAST {
+		// Only IPv4 distinguishes on-link routes by scope; IPv6 is always universe.
+		if !v6 && nr.Gw == nil && nr.Type == unix.RTN_UNICAST {
 			nr.Scope = netlink.SCOPE_LINK
 		}
 	}
@@ -151,15 +162,20 @@ func (Linux) ReplaceRoute(r model.Route) error {
 
 func (Linux) DelRoute(r model.Route) error {
 	nr, err := toNetlinkRoute(model.Route{Dst: r.Dst, Table: r.Table, Metric: r.Metric, Type: r.Type, Gateway: r.Gateway})
+	if nr != nil && nr.Family == netlink.FAMILY_V6 && r.Metric == 0 {
+		nr.Priority = 1024 // what the kernel stored for an IPv6 route added without a metric
+	}
 	if err != nil {
 		return err
 	}
-	// Match on key only: the output interface may be gone already.
+	// Match on key only: the output interface may be gone already, and
+	// scope "nowhere" means any scope (an on-link IPv4 route has link scope).
+	nr.Scope = netlink.SCOPE_NOWHERE
 	return netlink.RouteDel(nr)
 }
 
 func (Linux) ListRoutes() ([]LiveRoute, error) {
-	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{Table: unix.RT_TABLE_UNSPEC}, netlink.RT_FILTER_TABLE)
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: unix.RT_TABLE_UNSPEC}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return nil, err
 	}
@@ -170,12 +186,19 @@ func (Linux) ListRoutes() ([]LiveRoute, error) {
 	}
 	var out []LiveRoute
 	for _, r := range routes {
-		if r.Table == unix.RT_TABLE_LOCAL || r.Type == unix.RTN_BROADCAST || r.Type == unix.RTN_LOCAL {
+		if r.Table == unix.RT_TABLE_LOCAL || r.Type == unix.RTN_BROADCAST || r.Type == unix.RTN_LOCAL ||
+			r.Type == unix.RTN_MULTICAST || r.Type == unix.RTN_ANYCAST {
 			continue
 		}
+		v6 := r.Family == netlink.FAMILY_V6 || (r.Dst != nil && r.Dst.IP.To4() == nil) || (r.Gw != nil && r.Gw.To4() == nil)
 		mr := model.Route{Dst: "default", Dev: names[r.LinkIndex], Table: model.TableName(r.Table), Metric: r.Priority}
+		if v6 {
+			mr.Dst = "::/0"
+		}
 		if r.Dst != nil {
-			mr.Dst = r.Dst.String()
+			if ones, _ := r.Dst.Mask.Size(); ones > 0 {
+				mr.Dst = r.Dst.String()
+			}
 		}
 		if r.Gw != nil {
 			mr.Gateway = r.Gw.String()
@@ -202,6 +225,9 @@ var ruleActions = map[string]uint8{"": nl.FR_ACT_TO_TBL, "lookup": nl.FR_ACT_TO_
 func toNetlinkRule(r model.Rule, owned bool) (*netlink.Rule, error) {
 	nr := netlink.NewRule()
 	nr.Family = netlink.FAMILY_V4
+	if r.V6() {
+		nr.Family = netlink.FAMILY_V6
+	}
 	nr.Priority = r.Priority
 	nr.IifName, nr.OifName, nr.Mark = r.Iif, r.Oif, r.Fwmark
 	for _, p := range []struct {
@@ -258,8 +284,20 @@ func (Linux) DelRule(r model.Rule) error {
 // ListRules dumps rules itself because netlink.RuleList drops the action
 // (blackhole/unreachable/prohibit) of each rule.
 func (Linux) ListRules() ([]LiveRule, error) {
+	var out []LiveRule
+	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		rules, err := listRules(fam)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rules...)
+	}
+	return out, nil
+}
+
+func listRules(family int) ([]LiveRule, error) {
 	req := nl.NewNetlinkRequest(unix.RTM_GETRULE, unix.NLM_F_DUMP|unix.NLM_F_REQUEST)
-	req.AddData(nl.NewIfInfomsg(netlink.FAMILY_V4))
+	req.AddData(nl.NewIfInfomsg(family))
 	msgs, err := req.Execute(unix.NETLINK_ROUTE, unix.RTM_NEWRULE)
 	if err != nil && !errors.Is(err, netlink.ErrDumpInterrupted) {
 		return nil, err
@@ -276,15 +314,18 @@ func (Linux) ListRules() ([]LiveRule, error) {
 			table int
 			proto uint8
 		)
+		if family == netlink.FAMILY_V6 {
+			r.Family = "ipv6"
+		}
 		for _, a := range attrs {
 			v := a.Value
 			switch a.Attr.Type {
 			case unix.RTA_TABLE:
 				table = int(nl.NativeEndian().Uint32(v))
 			case nl.FRA_SRC:
-				r.Src = (&net.IPNet{IP: v, Mask: net.CIDRMask(int(hdr.Src_len), 32)}).String()
+				r.Src = (&net.IPNet{IP: v, Mask: net.CIDRMask(int(hdr.Src_len), 8*len(v))}).String()
 			case nl.FRA_DST:
-				r.Dst = (&net.IPNet{IP: v, Mask: net.CIDRMask(int(hdr.Dst_len), 32)}).String()
+				r.Dst = (&net.IPNet{IP: v, Mask: net.CIDRMask(int(hdr.Dst_len), 8*len(v))}).String()
 			case nl.FRA_FWMARK:
 				r.Fwmark = nl.NativeEndian().Uint32(v)
 			case nl.FRA_IIFNAME:
@@ -316,19 +357,24 @@ func (Linux) ListRules() ([]LiveRule, error) {
 
 // ---- sysctl --------------------------------------------------------------
 
-const ipForwardPath = "/proc/sys/net/ipv4/ip_forward"
+func forwardPath(v6 bool) string {
+	if v6 {
+		return "/proc/sys/net/ipv6/conf/all/forwarding"
+	}
+	return "/proc/sys/net/ipv4/ip_forward"
+}
 
-func (Linux) IPForward() (bool, error) {
-	b, err := os.ReadFile(ipForwardPath)
+func (Linux) IPForward(v6 bool) (bool, error) {
+	b, err := os.ReadFile(forwardPath(v6))
 	return strings.TrimSpace(string(b)) == "1", err
 }
 
-func (Linux) SetIPForward(on bool) error {
+func (Linux) SetIPForward(v6, on bool) error {
 	v := "0"
 	if on {
 		v = "1"
 	}
-	return os.WriteFile(ipForwardPath, []byte(v), 0o644)
+	return os.WriteFile(forwardPath(v6), []byte(v), 0o644)
 }
 
 // ---- watch ---------------------------------------------------------------
@@ -375,7 +421,7 @@ func (Linux) FirewallRuleset() (string, error) {
 	if err != nil {
 		return "", nil
 	}
-	b, err := exec.Command(nft, "list", "table", "ip", TableName).CombinedOutput()
+	b, err := exec.Command(nft, "list", "table", "inet", TableName).CombinedOutput()
 	if err != nil {
 		return "", nil // table doesn't exist yet
 	}

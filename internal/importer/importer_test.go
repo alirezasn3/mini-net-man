@@ -16,7 +16,8 @@ func TestParseUFW(t *testing.T) {
 ### tuple ### limit tcp 2222 0.0.0.0/0 any 0.0.0.0/0 in
 COMMIT`
 	var p Proposal
-	ParseUFW(user, "DEFAULT_INPUT_POLICY=\"DROP\"\nDEFAULT_FORWARD_POLICY=\"DROP\"\nDEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n", &p)
+	defaults := "DEFAULT_INPUT_POLICY=\"DROP\"\nDEFAULT_FORWARD_POLICY=\"DROP\"\nDEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n"
+	ParseUFW(user, defaults, "ipv4", &p)
 	if p.Policy == nil || p.Policy.Input != "drop" || p.Policy.Output != "accept" {
 		t.Fatalf("policy: %+v", p.Policy)
 	}
@@ -61,7 +62,7 @@ COMMIT
 -A INPUT ! -s 10.0.0.0/8 -j DROP
 COMMIT`
 	var p Proposal
-	ParseIptablesSave(in, "iptables (live)", &p)
+	ParseIptablesSave(in, "iptables (live)", "ipv4", &p)
 	if len(p.Firewall) != 4 {
 		t.Fatalf("want 4 rules, got %d: %+v", len(p.Firewall), p.Firewall)
 	}
@@ -78,5 +79,32 @@ COMMIT`
 	}
 	if len(p.Notes) < 2 {
 		t.Errorf("expected notes about skipped rules and DROP policy: %v", p.Notes)
+	}
+}
+
+func TestImportIPv6(t *testing.T) {
+	var p Proposal
+	ParseUFW(`### tuple ### allow tcp 22 ::/0 any ::/0 in
+### tuple ### route:allow any any ::/0 any ::/0 in_wgServer!out_wgBridge0
+### tuple ### allow tcp 443 fd00::/8 any ::/0 in`, "", "ipv6", &p)
+	if len(p.Firewall) != 3 {
+		t.Fatalf("want 3 rules, got %+v", p.Firewall)
+	}
+	for _, r := range p.Firewall {
+		if r.Family != "ipv6" {
+			t.Errorf("rule not pinned to ipv6: %+v", r)
+		}
+	}
+	if p.Firewall[2].Dst != "fd00::/8" {
+		t.Errorf("v6 dst lost: %+v", p.Firewall[2])
+	}
+
+	var q Proposal
+	ParseIptablesSave(`*filter
+-A INPUT -p ipv6-icmp -j ACCEPT
+-A FORWARD -s fd00:10::/64 -o wgBridge0 -j ACCEPT
+COMMIT`, "ip6tables (live)", "ipv6", &q)
+	if len(q.Firewall) != 2 || q.Firewall[0].Proto != "icmpv6" || q.Firewall[1].Src != "fd00:10::/64" {
+		t.Errorf("ip6tables parse: %+v", q.Firewall)
 	}
 }

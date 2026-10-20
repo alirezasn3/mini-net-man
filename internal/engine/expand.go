@@ -119,18 +119,27 @@ func Expand(cfg model.Config, ifaceNets func(iface string) []string) Desired {
 		}
 		table := fmt.Sprint(t)
 		src := "client:" + c.ID
-		if once("default|" + c.Out) {
-			d.Routes = append(d.Routes, model.Route{ID: "gen-" + src + "-default", Dst: "default", Dev: c.Out, Table: table,
+		// A client is IPv4 or IPv6 depending on its address. Each family has
+		// its own routes inside the exit's table (table numbers are per family).
+		fam, def := "ipv4", "default"
+		if v6, _ := clientIsV6(c.Src); v6 {
+			fam, def = "ipv6", "::/0"
+		}
+		if once("default|" + c.Out + "|" + fam) {
+			d.Routes = append(d.Routes, model.Route{ID: "gen-" + src + "-default", Dst: def, Dev: c.Out, Table: table,
 				Comment: "client routing exit " + c.Out, Source: "client-routing"})
 		}
-		if once("back|" + c.In + "|" + c.Out) {
+		if once("back|" + c.In + "|" + c.Out + "|" + fam) {
 			var nets []string
 			if ifaceNets != nil {
 				nets = ifaceNets(c.In)
 			}
 			sort.Strings(nets)
-			for _, net := range nets {
-				d.Routes = append(d.Routes, model.Route{ID: "gen-" + src + "-back-" + net, Dst: net, Dev: c.In, Table: table,
+			for _, nt := range nets {
+				if v6, err := clientIsV6(nt); err != nil || v6 != (fam == "ipv6") {
+					continue
+				}
+				d.Routes = append(d.Routes, model.Route{ID: "gen-" + src + "-back-" + nt, Dst: nt, Dev: c.In, Table: table,
 					Comment: "return path to " + c.In, Source: "client-routing"})
 			}
 		}
@@ -141,9 +150,9 @@ func Expand(cfg model.Config, ifaceNets func(iface string) []string) Desired {
 				Comment: "kill switch for " + nameOr(c, "client"), Source: "client-routing"})
 		}
 		n++
-		if once("masq|" + c.Out) {
-			genFW = append(genFW, model.FWRule{ID: "gen-masq-" + c.Out, Chain: model.ChainPostrouting, Action: "masquerade", OutIface: c.Out,
-				Comment: "client routing", Source: "client-routing"})
+		if once("masq|" + c.Out + "|" + fam) {
+			genFW = append(genFW, model.FWRule{ID: "gen-masq-" + c.Out + "-" + fam, Chain: model.ChainPostrouting, Action: "masquerade", OutIface: c.Out,
+				Family: fam, Comment: "client routing", Source: "client-routing"})
 		}
 		if once("fwd|" + c.In + "|" + c.Out) {
 			genFW = append(genFW, model.FWRule{ID: "gen-fwd-" + c.In + "-" + c.Out, Chain: model.ChainForward, Action: "accept", InIface: c.In, OutIface: c.Out,
@@ -159,6 +168,14 @@ func Expand(cfg model.Config, ifaceNets func(iface string) []string) Desired {
 	return d
 }
 
+func clientIsV6(s string) (bool, error) {
+	n, err := model.ParseCIDR(s, false)
+	if err != nil {
+		return false, err
+	}
+	return model.IsV6(n), nil
+}
+
 func nameOr(c model.ClientRoute, def string) string {
 	if c.Name != "" {
 		return c.Name
@@ -166,16 +183,20 @@ func nameOr(c model.ClientRoute, def string) string {
 	return def + " " + c.Src
 }
 
-// NetsOf turns "10.0.0.1/16" style addresses into their network prefixes.
+// NetsOf turns "10.0.0.1/16" or "fd00::1/64" style interface addresses into
+// network prefixes, skipping host addresses (/32, /128) and IPv6 link-local.
 func NetsOf(addrs []string) []string {
 	var out []string
 	for _, a := range addrs {
-		if _, n, err := net.ParseCIDR(a); err == nil {
-			ones, _ := n.Mask.Size()
-			if ones < 32 {
-				out = append(out, n.String())
-			}
+		ip, n, err := net.ParseCIDR(a)
+		if err != nil {
+			continue
 		}
+		ones, bits := n.Mask.Size()
+		if ones == bits || (ip.To4() == nil && ip.IsLinkLocalUnicast()) {
+			continue
+		}
+		out = append(out, n.String())
 	}
 	return out
 }

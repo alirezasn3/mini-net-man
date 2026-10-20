@@ -108,13 +108,11 @@ func (s *Server) Handler() http.Handler {
 		})
 	})
 	authed.HandleFunc("PUT /api/sysctl", func(w http.ResponseWriter, r *http.Request) {
-		var in struct {
-			IPForward *bool `json:"ip_forward"`
-		}
+		var in model.Sysctl
 		if !decode(w, r, &in) {
 			return
 		}
-		s.mutate(w, func(c *model.Config) error { c.Sysctl.IPForward = in.IPForward; return nil })
+		s.mutate(w, func(c *model.Config) error { c.Sysctl = in; return nil })
 	})
 
 	authed.HandleFunc("GET /api/safe", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.eng.SafeStatus()) })
@@ -318,12 +316,16 @@ func (s *Server) putWebSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	links, _ := s.eng.Kernel().Links()
 	links = orEmpty(links)
-	fwd, _ := s.eng.Kernel().IPForward()
+	fwd4, _ := s.eng.Kernel().IPForward(false)
+	fwd6, _ := s.eng.Kernel().IPForward(true)
 	host, _ := os.Hostname()
 	cfg := s.eng.Config()
 	writeJSON(w, map[string]any{
 		"hostname": host, "mock": s.mock,
-		"links": links, "ip_forward": fwd, "ip_forward_managed": cfg.Sysctl.IPForward != nil,
+		"links": links, "forwarding": map[string]any{
+			"ipv4": map[string]bool{"on": fwd4, "managed": cfg.Sysctl.IPForward != nil},
+			"ipv6": map[string]bool{"on": fwd6, "managed": cfg.Sysctl.IPv6Forward != nil},
+		},
 		"detect": detect.Run(), "issues": orEmpty(s.eng.Issues()), "safe": s.eng.SafeStatus(),
 		"counts": map[string]int{"addresses": len(cfg.Addresses), "routes": len(cfg.Routes), "rules": len(cfg.Rules), "firewall": len(cfg.Firewall.Rules), "clients": len(cfg.ClientRouting.Clients)},
 	})

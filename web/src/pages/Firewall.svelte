@@ -32,6 +32,7 @@
   const actions = ['accept', 'drop', 'reject', 'return', 'masquerade', 'dnat', 'snat']
   const match = (r) =>
     [
+      r.family && r.family.replace('ipv', 'IPv'),
       r.in_iface && `in ${r.in_iface}`,
       r.out_iface && `out ${r.out_iface}`,
       r.proto,
@@ -48,7 +49,7 @@
 
 <div class="space-y-5">
   <p class="text-sm text-slate-500">
-    Rules live in their own nftables table, <span class="mono">ip mini-net-man</span>, replaced atomically on every change. Rules in a chain run top to bottom; <b>dstnat</b> and <b>srcnat</b> are the NAT chains (like MikroTik's dst-nat / src-nat).
+    Rules live in their own nftables table, <span class="mono">inet mini-net-man</span> (IPv4 and IPv6), replaced atomically on every change. A rule with no address and no Family applies to both families. Rules in a chain run top to bottom; <b>dstnat</b> and <b>srcnat</b> are the NAT chains (like MikroTik's dst-nat / src-nat).
   </p>
 
   <section class="card p-4">
@@ -83,9 +84,10 @@
       { key: 'action', label: 'Action', type: 'select', options: actions },
       { key: 'in_iface', label: 'In interface', type: 'iface', mono: true, show: (d) => d.chain !== 'output' && d.chain !== 'srcnat' },
       { key: 'out_iface', label: 'Out interface', type: 'iface', mono: true, show: (d) => d.chain !== 'input' && d.chain !== 'dstnat' },
-      { key: 'src', label: 'Source', type: 'text', mono: true, placeholder: '10.0.0.0/16' },
+      { key: 'src', label: 'Source', type: 'text', mono: true, placeholder: '10.0.0.0/16 or fd00::/64' },
       { key: 'dst', label: 'Destination', type: 'text', mono: true },
-      { key: 'proto', label: 'Protocol', type: 'select', options: [{ value: '', label: 'any' }, 'tcp', 'udp', 'icmp'] },
+      { key: 'family', label: 'Family', type: 'select', options: [{ value: '', label: 'both (or from addresses)' }, { value: 'ipv4', label: 'IPv4 only' }, { value: 'ipv6', label: 'IPv6 only' }] },
+      { key: 'proto', label: 'Protocol', type: 'select', options: [{ value: '', label: 'any' }, 'tcp', 'udp', 'icmp', 'icmpv6'] },
       { key: 'conn_state', label: 'Connection state', type: 'text', placeholder: 'established,related' },
       { key: 'src_port', label: 'Source port', type: 'text', placeholder: '1024-65535', show: (d) => d.proto === 'tcp' || d.proto === 'udp' },
       { key: 'dst_port', label: 'Destination port', type: 'text', placeholder: '22 or 80,443', show: (d) => d.proto === 'tcp' || d.proto === 'udp' },
@@ -93,7 +95,7 @@
       { key: 'to_port', label: 'To port', type: 'number', show: (d) => d.action === 'dnat' || d.action === 'snat' },
       { key: 'comment', label: 'Comment', type: 'text', wide: true },
     ]}
-    blank={() => ({ chain: 'forward', action: 'accept', in_iface: '', out_iface: '', src: '', dst: '', proto: '', src_port: '', dst_port: '', conn_state: '', to_addr: '', to_port: 0, comment: '', disabled: false })}
+    blank={() => ({ chain: 'forward', action: 'accept', family: '', in_iface: '', out_iface: '', src: '', dst: '', proto: '', src_port: '', dst_port: '', conn_state: '', to_addr: '', to_port: 0, comment: '', disabled: false })}
   />
 
   <section class="card">

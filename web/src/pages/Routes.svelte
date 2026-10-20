@@ -23,7 +23,7 @@
 </script>
 
 <div class="space-y-5">
-  <p class="text-sm text-slate-500">Like <span class="mono">ip route add … table N</span>. Routes created here carry an owner tag, so mini-net-man only ever removes its own.</p>
+  <p class="text-sm text-slate-500">Like <span class="mono">ip route add … table N</span>, for IPv4 and IPv6. Use <span class="mono">default</span> for the IPv4 default route and <span class="mono">::/0</span> for IPv6. Routes created here carry an owner tag, so mini-net-man only ever removes its own.</p>
   <Resource
     title="Routes"
     endpoint="/api/routes"
@@ -40,10 +40,10 @@
       { key: 'comment', label: 'Comment' },
     ]}
     fields={[
-      { key: 'dst', label: 'Destination', type: 'text', mono: true, placeholder: 'default or 10.0.0.0/16' },
+      { key: 'dst', label: 'Destination', type: 'text', mono: true, placeholder: 'default, ::/0, 10.0.0.0/16, fd00::/64' },
       { key: 'table', label: 'Table', type: 'text', placeholder: 'main, or a number like 200', help: 'Empty means main.' },
       { key: 'dev', label: 'Interface', type: 'iface', mono: true, placeholder: 'wgBridge0' },
-      { key: 'gateway', label: 'Gateway', type: 'text', mono: true, placeholder: 'optional next hop' },
+      { key: 'gateway', label: 'Gateway', type: 'text', mono: true, placeholder: 'optional next hop (v4 or v6)' },
       { key: 'metric', label: 'Metric', type: 'number', help: '0 uses the kernel default.' },
       { key: 'type', label: 'Type', type: 'select', options: ['unicast', 'blackhole', 'unreachable', 'prohibit'] },
       { key: 'comment', label: 'Comment', type: 'text', wide: true },

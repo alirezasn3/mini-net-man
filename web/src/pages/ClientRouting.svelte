@@ -62,7 +62,7 @@
     ]}
     fields={[
       { key: 'name', label: 'Name', type: 'text', placeholder: 'alice-laptop', wide: true },
-      { key: 'src', label: 'Client IP or network', type: 'text', mono: true, placeholder: '10.0.0.5' },
+      { key: 'src', label: 'Client IP or network', type: 'text', mono: true, placeholder: '10.0.0.5 or fd00:10::5', help: 'IPv4 or IPv6. A client is routed within its own family.' },
       { key: 'in', label: 'Client-facing interface', type: 'iface', mono: true, placeholder: 'wgServer' },
       { key: 'out', label: 'Exit interface', type: 'iface', mono: true, placeholder: 'wgBridge1' },
       { key: 'kill_switch', label: 'Kill switch: drop traffic if the exit is down', type: 'checkbox', wide: true },
@@ -78,7 +78,7 @@
         {#each generated.rules as r}<li>rule {r.priority}: {r.src ? 'from ' + r.src : ''} {r.action === 'lookup' || !r.action ? 'lookup ' + r.table : r.action}</li>{/each}
         {#each generated.firewall as r}<li>firewall {r.chain}: {r.action} {r.in_iface ? 'in ' + r.in_iface : ''} {r.out_iface ? 'out ' + r.out_iface : ''} {r.conn_state ? 'state ' + r.conn_state : ''}</li>{/each}
       </ul>
-      <p class="mt-3 text-xs text-slate-500">IP forwarding must also be on (Overview).</p>
+      <p class="mt-3 text-xs text-slate-500">Forwarding for the client's family must also be on (Overview).</p>
     </section>
   {/if}
 </div>

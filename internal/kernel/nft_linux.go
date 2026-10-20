@@ -25,9 +25,14 @@ func (Linux) ApplyFirewall(fw model.Firewall) error {
 	}
 	defer c.CloseLasting()
 
-	// add + delete + add is the idiom for "replace this table atomically",
-	// and works whether or not the table exists yet.
-	tbl := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: TableName}
+	// add + delete is the idiom for "remove this table if it exists" inside
+	// a transaction. The first one clears the IPv4-only table early versions
+	// used; the second one clears the current table before it is rebuilt.
+	legacy := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: TableName}
+	c.AddTable(legacy)
+	c.DelTable(legacy)
+
+	tbl := &nftables.Table{Family: nftables.TableFamilyINet, Name: TableName}
 	c.AddTable(tbl)
 	c.DelTable(tbl)
 	tbl = c.AddTable(tbl)
@@ -83,36 +88,33 @@ func hookOf(h string) *nftables.ChainHook {
 
 func ifname(s string) []byte { return []byte(s + "\x00") }
 
-func ipOf(s string) ([]byte, []byte, error) {
-	n, err := model.ParseCIDR(s, false)
-	if err != nil {
-		return nil, nil, err
-	}
-	return n.IP.To4(), n.Mask, nil
-}
-
-func matchAddr(offset uint32, cidr string) ([]expr.Any, error) {
-	ip, mask, err := ipOf(cidr)
+// matchAddr compares the source or destination address in the IP header.
+// The caller has already restricted the rule to the address's family, so the
+// payload offsets below are safe to read.
+func matchAddr(src bool, cidr string) ([]expr.Any, error) {
+	n, err := model.ParseCIDR(cidr, false)
 	if err != nil {
 		return nil, err
 	}
-	out := []expr.Any{&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: offset, Len: 4}}
-	if ones, _ := net.IPMask(mask).Size(); ones < 32 {
-		out = append(out, &expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: mask, Xor: []byte{0, 0, 0, 0}})
+	var offset, size uint32
+	ip, mask := []byte(n.IP), []byte(n.Mask)
+	if model.IsV6(n) {
+		offset, size = 24, 16 // daddr
+		if src {
+			offset = 8
+		}
+	} else {
+		offset, size = 16, 4
+		if src {
+			offset = 12
+		}
+		ip = n.IP.To4()
+	}
+	out := []expr.Any{&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: offset, Len: size}}
+	if ones, bits := net.IPMask(mask).Size(); ones < bits {
+		out = append(out, &expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: size, Mask: mask, Xor: make([]byte, size)})
 	}
 	return append(out, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ip}), nil
-}
-
-type maskLen struct{ m []byte }
-
-func (m *maskLen) size() (int, int) {
-	n := 0
-	for _, b := range m.m {
-		for ; b != 0; b <<= 1 {
-			n++
-		}
-	}
-	return n, len(m.m) * 8
 }
 
 // portExprs matches a transport-header port (offset 0 = source, 2 = dest)
@@ -154,6 +156,13 @@ func splitList(s string) []string {
 // alternative ("80,443" becomes two rules).
 func buildRule(r model.FWRule) ([][]expr.Any, error) {
 	var head []expr.Any
+	// In an inet table nothing narrows a rule to one family unless we say so.
+	switch r.EffFamily() {
+	case "ipv4":
+		head = append(head, &expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}})
+	case "ipv6":
+		head = append(head, &expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}})
+	}
 	if r.InIface != "" {
 		head = append(head, &expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(r.InIface)})
 	}
@@ -161,26 +170,22 @@ func buildRule(r model.FWRule) ([][]expr.Any, error) {
 		head = append(head, &expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(r.OutIface)})
 	}
 	if r.Src != "" {
-		e, err := matchAddr(12, r.Src)
+		e, err := matchAddr(true, r.Src)
 		if err != nil {
 			return nil, err
 		}
 		head = append(head, e...)
 	}
 	if r.Dst != "" {
-		e, err := matchAddr(16, r.Dst)
+		e, err := matchAddr(false, r.Dst)
 		if err != nil {
 			return nil, err
 		}
 		head = append(head, e...)
 	}
-	switch r.Proto {
-	case "tcp":
-		head = append(head, &expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}})
-	case "udp":
-		head = append(head, &expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}})
-	case "icmp":
-		head = append(head, &expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_ICMP}})
+	protos := map[string]byte{"tcp": unix.IPPROTO_TCP, "udp": unix.IPPROTO_UDP, "icmp": unix.IPPROTO_ICMP, "icmpv6": unix.IPPROTO_ICMPV6}
+	if p, ok := protos[r.Proto]; ok {
+		head = append(head, &expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{p}})
 	}
 	if r.ConnState != "" {
 		bits := uint32(0)
@@ -242,19 +247,25 @@ func action(r model.FWRule) ([]expr.Any, error) {
 	case "return":
 		return []expr.Any{&expr.Verdict{Kind: expr.VerdictReturn}}, nil
 	case "reject":
-		return []expr.Any{&expr.Reject{Type: unix.NFT_REJECT_ICMP_UNREACH, Code: unix.NFT_REJECT_ICMPX_PORT_UNREACH}}, nil
+		// icmpx works for both families.
+		return []expr.Any{&expr.Reject{Type: unix.NFT_REJECT_ICMPX_UNREACH, Code: unix.NFT_REJECT_ICMPX_PORT_UNREACH}}, nil
 	case "masquerade":
 		return []expr.Any{&expr.Masq{}}, nil
 	case "dnat", "snat":
-		ip, _, err := ipOf(r.ToAddr)
-		if err != nil {
-			return nil, err
+		to := net.ParseIP(r.ToAddr)
+		if to == nil {
+			return nil, fmt.Errorf("bad to_addr %q", r.ToAddr)
 		}
-		nat := &expr.NAT{Type: expr.NATTypeDestNAT, Family: unix.NFPROTO_IPV4, RegAddrMin: 1}
+		nat := &expr.NAT{Type: expr.NATTypeDestNAT, RegAddrMin: 1}
 		if r.Action == "snat" {
 			nat.Type = expr.NATTypeSourceNAT
 		}
-		out := []expr.Any{&expr.Immediate{Register: 1, Data: ip}}
+		data := []byte(to.To4())
+		nat.Family = unix.NFPROTO_IPV4
+		if data == nil {
+			data, nat.Family = []byte(to.To16()), unix.NFPROTO_IPV6
+		}
+		out := []expr.Any{&expr.Immediate{Register: 1, Data: data}}
 		if r.ToPort != 0 {
 			out = append(out, &expr.Immediate{Register: 2, Data: binaryutil.BigEndian.PutUint16(uint16(r.ToPort))})
 			nat.RegProtoMin = 2

@@ -10,8 +10,12 @@
     return (n / 1024 ** i).toFixed(i ? 1 : 0) + ' ' + u[i]
   }
 
-  async function setForward(on) {
-    if (await act(() => api('PUT', '/api/sysctl', { ip_forward: on }), on ? 'IP forwarding enabled' : 'IP forwarding disabled')) refreshOverview()
+  // Toggle one family; keep the other as it is (a managed value is re-sent, an unmanaged one stays unmanaged).
+  async function setForward(v6, on) {
+    const f = o.forwarding
+    const keep = (x) => (x.managed ? x.on : null)
+    const body = { ip_forward: v6 ? keep(f.ipv4) : on, ipv6_forward: v6 ? on : keep(f.ipv6) }
+    if (await act(() => api('PUT', '/api/sysctl', body), `${v6 ? 'IPv6' : 'IPv4'} forwarding ${on ? 'enabled' : 'disabled'}`)) refreshOverview()
   }
   async function reapply() {
     if (await act(() => api('POST', '/api/reapply'), 'Reapplied')) refreshOverview()
@@ -79,13 +83,19 @@
 
     <div class="grid gap-4 lg:grid-cols-2">
       <section class="card p-4">
-        <h2 class="mb-3 text-sm font-semibold">IP forwarding</h2>
+        <h2 class="mb-3 text-sm font-semibold">Forwarding</h2>
         <p class="mb-3 text-sm text-slate-500">Needed for any traffic that passes through this machine (routing between interfaces).</p>
-        <div class="flex items-center gap-3">
-          <span class="badge {o.ip_forward ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'}">{o.ip_forward ? 'enabled' : 'disabled'}</span>
-          <button class="btn btn-sm" onclick={() => setForward(!o.ip_forward)}>{o.ip_forward ? 'Disable' : 'Enable'} and keep it that way</button>
-        </div>
-        <p class="mt-2 text-xs text-slate-500">{o.ip_forward_managed ? 'mini-net-man sets this at startup.' : 'Not managed: left as the system has it.'}</p>
+        <ul class="space-y-2">
+          {#each [['IPv4', false, o.forwarding.ipv4], ['IPv6', true, o.forwarding.ipv6]] as [label, v6, f]}
+            <li class="flex flex-wrap items-center gap-3">
+              <span class="w-10 text-sm font-medium">{label}</span>
+              <span class="badge {f.on ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'}">{f.on ? 'enabled' : 'disabled'}</span>
+              <button class="btn btn-sm" onclick={() => setForward(v6, !f.on)}>{f.on ? 'Disable' : 'Enable'} and keep it that way</button>
+              <span class="text-xs text-slate-500">{f.managed ? 'set at startup' : 'not managed'}</span>
+            </li>
+          {/each}
+        </ul>
+        <p class="mt-3 text-xs text-slate-500">Linux stops accepting IPv6 router advertisements on a host that forwards, unless <span class="mono">accept_ra</span> is 2 on its uplink. If this machine gets its IPv6 address by SLAAC, set that before enabling IPv6 forwarding.</p>
       </section>
 
       <section class="card p-4">

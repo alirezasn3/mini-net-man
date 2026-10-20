@@ -1,4 +1,4 @@
-.PHONY: all web build linux test dev clean
+.PHONY: all web build linux test integration dev clean
 
 all: build
 
@@ -15,6 +15,14 @@ linux: web
 
 test:
 	go test ./...
+
+# Real-kernel tests: netlink + nftables inside a privileged Linux container
+# (needs Docker). Each test runs in its own network namespace.
+# Run one with: make integration T=TestFirewallBehavior
+integration:
+	docker build -q -f Dockerfile.test -t mnm-test .
+	docker run --rm --privileged -v "$(CURDIR)":/src -v mnm-gomod:/go/pkg/mod -v mnm-gobuild:/root/.cache/go-build \
+		mnm-test sh scripts/integration.sh $(T)
 
 # UI development: fake kernel on :8080, Vite with hot reload on :5173.
 dev:

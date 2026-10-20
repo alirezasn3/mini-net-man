@@ -18,14 +18,14 @@
   })
 
   const match = (r) =>
-    [r.src && `from ${r.src}`, r.dst && `to ${r.dst}`, r.iif && `iif ${r.iif}`, r.oif && `oif ${r.oif}`, r.fwmark && `fwmark 0x${r.fwmark.toString(16)}`]
+    [r.family === 'ipv6' && !r.src && !r.dst && 'ipv6', r.src && `from ${r.src}`, r.dst && `to ${r.dst}`, r.iif && `iif ${r.iif}`, r.oif && `oif ${r.oif}`, r.fwmark && `fwmark 0x${r.fwmark.toString(16)}`]
       .filter(Boolean)
       .join(' ') || 'all'
   const action = (r) => (!r.action || r.action === 'lookup' ? `lookup ${r.table}` : r.action)
 </script>
 
 <div class="space-y-5">
-  <p class="text-sm text-slate-500">Like <span class="mono">ip rule add … priority N</span>. The lowest priority number is checked first; the first rule whose table has a matching route wins.</p>
+  <p class="text-sm text-slate-500">Like <span class="mono">ip rule add … priority N</span>. IPv4 and IPv6 have separate rule lists; the family comes from the addresses you give, or from the Family field. The lowest priority number is checked first; the first rule whose table has a matching route wins.</p>
   <Resource
     title="Policy rules"
     endpoint="/api/rules"
@@ -42,15 +42,16 @@
     fields={[
       { key: 'priority', label: 'Priority', type: 'number', help: '0 – 32765' },
       { key: 'action', label: 'Action', type: 'select', options: ['lookup', 'blackhole', 'unreachable', 'prohibit'] },
+      { key: 'family', label: 'Family', type: 'select', options: [{ value: '', label: 'from addresses (IPv4 if none)' }, { value: 'ipv4', label: 'IPv4' }, { value: 'ipv6', label: 'IPv6' }] },
       { key: 'table', label: 'Table', type: 'text', placeholder: '200, main, local', show: (d) => !d.action || d.action === 'lookup' },
-      { key: 'src', label: 'From (source)', type: 'text', mono: true, placeholder: '10.0.0.0/16' },
+      { key: 'src', label: 'From (source)', type: 'text', mono: true, placeholder: '10.0.0.0/16 or fd00::/64' },
       { key: 'dst', label: 'To (destination)', type: 'text', mono: true, placeholder: '192.168.71.0/24' },
       { key: 'iif', label: 'Incoming interface', type: 'iface', mono: true },
       { key: 'oif', label: 'Outgoing interface', type: 'iface', mono: true },
       { key: 'fwmark', label: 'Firewall mark', type: 'number', help: '0 = any' },
       { key: 'comment', label: 'Comment', type: 'text', wide: true },
     ]}
-    blank={() => ({ priority: 200, action: 'lookup', table: '', src: '', dst: '', iif: '', oif: '', fwmark: 0, comment: '', disabled: false })}
+    blank={() => ({ priority: 200, action: 'lookup', family: '', table: '', src: '', dst: '', iif: '', oif: '', fwmark: 0, comment: '', disabled: false })}
   />
 
   <section class="card">

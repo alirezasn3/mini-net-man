@@ -19,7 +19,7 @@ type Mock struct {
 	routes   []LiveRoute
 	rules    []LiveRule
 	fw       *model.Firewall
-	forward  bool
+	forward  [2]bool // v4, v6
 	watchers []chan struct{}
 }
 
@@ -35,18 +35,21 @@ func NewMock() *Mock {
 	}
 	add("lo", "loopback", true, "127.0.0.1/8")
 	add("ens192", "device", true, "192.168.71.10/24")
-	add("wgServer", "wireguard", true, "10.0.0.1/16")
-	add("wgBridge0", "wireguard", true, "10.8.0.2/32")
+	add("wgServer", "wireguard", true, "10.0.0.1/16", "fd00:10::1/64")
+	add("wgBridge0", "wireguard", true, "10.8.0.2/32", "fd00:8::2/128")
 	add("wgBridge1", "wireguard", true, "10.9.0.2/32")
 	m.routes = []LiveRoute{
 		{Route: model.Route{Dst: "default", Gateway: "192.168.71.1", Dev: "ens192", Table: "main", Metric: 100}, Proto: "static"},
 		{Route: model.Route{Dst: "192.168.71.0/24", Dev: "ens192", Table: "main"}, Proto: "kernel"},
 		{Route: model.Route{Dst: "10.0.0.0/16", Dev: "wgServer", Table: "main"}, Proto: "kernel"},
+		{Route: model.Route{Dst: "fd00:10::/64", Dev: "wgServer", Table: "main", Metric: 256}, Proto: "kernel"},
 	}
 	m.rules = []LiveRule{
 		{Rule: model.Rule{Priority: 0, Action: "lookup", Table: "local"}},
 		{Rule: model.Rule{Priority: 32766, Action: "lookup", Table: "main"}},
 		{Rule: model.Rule{Priority: 32767, Action: "lookup", Table: "default"}},
+		{Rule: model.Rule{Priority: 0, Family: "ipv6", Action: "lookup", Table: "local"}},
+		{Rule: model.Rule{Priority: 32766, Family: "ipv6", Action: "lookup", Table: "main"}},
 	}
 	return m
 }
@@ -262,16 +265,23 @@ func (m *Mock) FirewallRuleset() (string, error) {
 	return RenderNFT(*m.fw), nil
 }
 
-func (m *Mock) IPForward() (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.forward, nil
+func fwdIdx(v6 bool) int {
+	if v6 {
+		return 1
+	}
+	return 0
 }
 
-func (m *Mock) SetIPForward(on bool) error {
+func (m *Mock) IPForward(v6 bool) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.forward = on
+	return m.forward[fwdIdx(v6)], nil
+}
+
+func (m *Mock) SetIPForward(v6, on bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.forward[fwdIdx(v6)] = on
 	return nil
 }
 

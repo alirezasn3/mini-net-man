@@ -29,27 +29,37 @@ type Proposal struct {
 }
 
 const (
-	UFWUserRules   = "/etc/ufw/user.rules"
-	UFWDefaults    = "/etc/default/ufw"
-	PersistentRule = "/etc/iptables/rules.v4"
+	UFWUserRules    = "/etc/ufw/user.rules"
+	UFWUserRules6   = "/etc/ufw/user6.rules"
+	UFWDefaults     = "/etc/default/ufw"
+	PersistentRule  = "/etc/iptables/rules.v4"
+	PersistentRule6 = "/etc/iptables/rules.v6"
 )
 
 // Scan collects proposals from every source that exists on this machine.
 func Scan(k kernel.Kernel) Proposal {
 	var p Proposal
 	scanIP(k, &p)
-	if b, err := os.ReadFile(UFWUserRules); err == nil {
-		def, _ := os.ReadFile(UFWDefaults)
-		ParseUFW(string(b), string(def), &p)
+	def, _ := os.ReadFile(UFWDefaults)
+	for _, f := range []struct{ path, family string }{{UFWUserRules, "ipv4"}, {UFWUserRules6, "ipv6"}} {
+		if b, err := os.ReadFile(f.path); err == nil {
+			ParseUFW(string(b), string(def), f.family, &p)
+		}
 	}
-	if b, err := os.ReadFile(PersistentRule); err == nil {
-		ParseIptablesSave(string(b), "iptables-persistent", &p)
+	for _, f := range []struct{ path, family string }{{PersistentRule, "ipv4"}, {PersistentRule6, "ipv6"}} {
+		if b, err := os.ReadFile(f.path); err == nil {
+			ParseIptablesSave(string(b), "iptables-persistent", f.family, &p)
+		}
 	}
-	if path, err := exec.LookPath("iptables-save"); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if out, err := exec.CommandContext(ctx, path).Output(); err == nil {
-			ParseIptablesSave(string(out), "iptables (live)", &p)
+	for _, f := range []struct{ tool, family, label string }{
+		{"iptables-save", "ipv4", "iptables (live)"}, {"ip6tables-save", "ipv6", "ip6tables (live)"},
+	} {
+		if path, err := exec.LookPath(f.tool); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if out, err := exec.CommandContext(ctx, path).Output(); err == nil {
+				ParseIptablesSave(string(out), f.label, f.family, &p)
+			}
+			cancel()
 		}
 	}
 	return p
@@ -98,7 +108,7 @@ var (
 // matches on interface, address, protocol, ports and conntrack state with
 // ACCEPT/DROP/REJECT/MASQUERADE/DNAT/SNAT targets. Anything else (including
 // jumps into user chains such as ufw-*) is reported in Notes, not guessed at.
-func ParseIptablesSave(text, source string, p *Proposal) {
+func ParseIptablesSave(text, source, family string, p *Proposal) {
 	table := ""
 	skipped := 0
 	sc := bufio.NewScanner(strings.NewReader(text))
@@ -123,7 +133,12 @@ func ParseIptablesSave(text, source string, p *Proposal) {
 				skipped++
 				continue
 			}
-			r.ID, r.Source = engine.NewID(), source
+			// iptables rules only ever saw one family; keep them that way.
+			r.ID, r.Source, r.Family = engine.NewID(), source, family
+			if r.Validate() != nil {
+				skipped++
+				continue
+			}
 			p.Firewall = append(p.Firewall, r)
 		}
 	}
@@ -198,14 +213,17 @@ func parseIptRule(line string, chains map[string]string) (model.FWRule, bool) {
 	if r.Action == "" {
 		return r, false
 	}
-	if r.Proto == "all" {
+	switch r.Proto {
+	case "all":
 		r.Proto = ""
+	case "ipv6-icmp", "icmp6":
+		r.Proto = "icmpv6"
 	}
 	return r, r.Validate() == nil
 }
 
 func zeroToEmpty(s string) string {
-	if s == "0.0.0.0/0" {
+	if s == "0.0.0.0/0" || s == "::/0" {
 		return ""
 	}
 	return s
@@ -214,11 +232,12 @@ func zeroToEmpty(s string) string {
 // ---- ufw -------------------------------------------------------------------
 
 // ParseUFW reads the machine-readable "### tuple ###" comments ufw writes to
-// user.rules. defaults is the content of /etc/default/ufw.
+// user.rules (family ipv4) or user6.rules (ipv6). defaults is the content of
+// /etc/default/ufw.
 //
 //	### tuple ### allow tcp 22 0.0.0.0/0 any 0.0.0.0/0 in
 //	### tuple ### route:allow any any 0.0.0.0/0 any 0.0.0.0/0 in_wgServer!out_wgBridge0
-func ParseUFW(text, defaults string, p *Proposal) {
+func ParseUFW(text, defaults, family string, p *Proposal) {
 	skipped := 0
 	var out []model.FWRule
 	sc := bufio.NewScanner(strings.NewReader(text))
@@ -234,7 +253,7 @@ func ParseUFW(text, defaults string, p *Proposal) {
 			continue
 		}
 		act, proto, dport, dst, sport, src, dir := f[0], f[1], f[2], f[3], f[4], f[5], f[6]
-		r := model.FWRule{ID: engine.NewID(), Source: "ufw", Proto: proto, DstPort: portSpec(dport), SrcPort: portSpec(sport),
+		r := model.FWRule{ID: engine.NewID(), Source: "ufw", Family: family, Proto: proto, DstPort: portSpec(dport), SrcPort: portSpec(sport),
 			Dst: zeroToEmpty(dst), Src: zeroToEmpty(src), Comment: comment}
 		if proto == "any" {
 			r.Proto = ""
@@ -281,7 +300,9 @@ func ParseUFW(text, defaults string, p *Proposal) {
 	}
 
 	pol := ufwPolicies(defaults)
-	if pol.Input == "drop" || pol.Forward == "drop" || pol.Output == "drop" {
+	// The policy and ufw's implicit rules are shared by both families, so
+	// they're added once (by whichever file is scanned first).
+	if p.Policy == nil && (pol.Input == "drop" || pol.Forward == "drop" || pol.Output == "drop") {
 		p.Policy = &pol
 		// ufw's before.rules provides these implicitly under a drop policy.
 		boiler := []model.FWRule{

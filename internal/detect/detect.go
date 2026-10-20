@@ -29,7 +29,7 @@ type Report struct {
 	Warnings         []string `json:"warnings"`
 }
 
-var toolNames = []string{"nft", "ip", "iptables", "iptables-save", "ufw", "netfilter-persistent", "wg"}
+var toolNames = []string{"nft", "ip", "iptables", "iptables-save", "ip6tables", "ip6tables-save", "ufw", "netfilter-persistent", "wg"}
 
 func Run() Report {
 	r := Report{Tools: []Tool{}, PersistentFiles: []string{}, Warnings: []string{}}

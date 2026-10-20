@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -24,9 +25,23 @@ func canonTable(s string) int {
 	return n
 }
 
+// v6DefaultMetric is what the kernel stores for IPv6 routes added without one.
+const v6DefaultMetric = 1024
+
+func canonIP(s string) string {
+	if ip := net.ParseIP(s); ip != nil {
+		return ip.String()
+	}
+	return s
+}
+
 // Key identifies a route the way the kernel does (table, destination, metric).
 func (r Route) Key() string {
-	return fmt.Sprintf("%d|%s|%d", canonTable(r.Table), canonNet(r.Dst, true), r.Metric)
+	m := r.Metric
+	if m == 0 && r.V6() {
+		m = v6DefaultMetric
+	}
+	return fmt.Sprintf("%d|%s|%d", canonTable(r.Table), canonNet(r.NormDst(), true), m)
 }
 
 // Sig covers every field that can change without changing the key.
@@ -35,7 +50,12 @@ func (r Route) Sig() string {
 	if t == "" {
 		t = "unicast"
 	}
-	return fmt.Sprintf("%s|%s|%s|%s", r.Key(), r.Gateway, r.Dev, t)
+	if t != "unicast" {
+		// The kernel attaches a device (lo) to blackhole-style routes; neither
+		// device nor gateway means anything for them.
+		return r.Key() + "|" + t
+	}
+	return fmt.Sprintf("%s|%s|%s|%s", r.Key(), canonIP(r.Gateway), r.Dev, t)
 }
 
 // Key is the full identity of a rule: two rules with the same key are the same rule.
@@ -46,7 +66,11 @@ func (r Rule) Key() string {
 		a = "lookup"
 		t = canonTable(r.Table)
 	}
-	return fmt.Sprintf("%d|%s|%s|%s|%s|%d|%s|%d", r.Priority, canonNet(r.Src, false), canonNet(r.Dst, false), r.Iif, r.Oif, r.Fwmark, a, t)
+	fam := "4"
+	if r.V6() {
+		fam = "6"
+	}
+	return fmt.Sprintf("%s|%d|%s|%s|%s|%s|%d|%s|%d", fam, r.Priority, canonNet(r.Src, false), canonNet(r.Dst, false), r.Iif, r.Oif, r.Fwmark, a, t)
 }
 
 func (a Address) Key() string {
@@ -75,6 +99,9 @@ func (r Rule) Describe() string {
 	}
 	if r.Fwmark != 0 {
 		fmt.Fprintf(&b, " fwmark 0x%x", r.Fwmark)
+	}
+	if r.V6() {
+		b.WriteString(" [ipv6]")
 	}
 	if r.Action == "" || r.Action == "lookup" {
 		b.WriteString(" lookup " + r.Table)

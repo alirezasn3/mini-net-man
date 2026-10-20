@@ -1,5 +1,6 @@
 // Package model holds the types shared by the config file, the REST API and
-// the kernel layer. Everything is IPv4 for now.
+// the kernel layer. IPv4 and IPv6 are both supported; an item's family is
+// inferred from its addresses (see the V6 methods) or set explicitly.
 package model
 
 // Well-known routing table ids.
@@ -36,14 +37,15 @@ type User struct {
 
 type Sysctl struct {
 	// nil leaves the kernel setting alone.
-	IPForward *bool `yaml:"ip_forward,omitempty" json:"ip_forward"`
+	IPForward   *bool `yaml:"ip_forward,omitempty" json:"ip_forward"`
+	IPv6Forward *bool `yaml:"ipv6_forward,omitempty" json:"ipv6_forward"`
 }
 
-// Address is an extra IPv4 address added to an interface (like `ip addr add`).
+// Address is an extra address (IPv4 or IPv6) added to an interface (like `ip addr add`).
 type Address struct {
 	ID        string `yaml:"id" json:"id"`
 	Interface string `yaml:"interface" json:"interface"`
-	Address   string `yaml:"address" json:"address"` // CIDR, e.g. 10.0.0.1/16
+	Address   string `yaml:"address" json:"address"` // CIDR, e.g. 10.0.0.1/16 or fd00::1/64
 	Comment   string `yaml:"comment,omitempty" json:"comment"`
 	Disabled  bool   `yaml:"disabled,omitempty" json:"disabled"`
 	Source    string `yaml:"-" json:"source,omitempty"` // set on generated items only
@@ -72,6 +74,7 @@ type Rule struct {
 	Iif      string `yaml:"iif,omitempty" json:"iif"`
 	Oif      string `yaml:"oif,omitempty" json:"oif"`
 	Fwmark   uint32 `yaml:"fwmark,omitempty" json:"fwmark"`
+	Family   string `yaml:"family,omitempty" json:"family"` // "", ipv4 or ipv6; "" infers from src/dst, else IPv4
 	Action   string `yaml:"action,omitempty" json:"action"` // lookup (default), blackhole, unreachable, prohibit
 	Table    string `yaml:"table,omitempty" json:"table"`   // for action=lookup
 	Comment  string `yaml:"comment,omitempty" json:"comment"`
@@ -110,7 +113,8 @@ type FWRule struct {
 	OutIface  string `yaml:"out_iface,omitempty" json:"out_iface"`
 	Src       string `yaml:"src,omitempty" json:"src"`
 	Dst       string `yaml:"dst,omitempty" json:"dst"`
-	Proto     string `yaml:"proto,omitempty" json:"proto"`           // tcp|udp|icmp or ""
+	Family    string `yaml:"family,omitempty" json:"family"`         // "" = both families, ipv4 or ipv6
+	Proto     string `yaml:"proto,omitempty" json:"proto"`           // tcp|udp|icmp|icmpv6 or ""
 	SrcPort   string `yaml:"src_port,omitempty" json:"src_port"`     // "80" or "1000-2000"
 	DstPort   string `yaml:"dst_port,omitempty" json:"dst_port"`     // "80" or "1000-2000"
 	ConnState string `yaml:"conn_state,omitempty" json:"conn_state"` // comma list: new,established,related,invalid
@@ -160,7 +164,7 @@ type Link struct {
 	Running bool     `json:"running"`
 	MTU     int      `json:"mtu"`
 	MAC     string   `json:"mac"`
-	Addrs   []string `json:"addrs"`
+	Addrs   []string `json:"addrs"` // IPv4 and global IPv6
 	RxBytes uint64   `json:"rx_bytes"`
 	TxBytes uint64   `json:"tx_bytes"`
 }

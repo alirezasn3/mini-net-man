@@ -13,10 +13,10 @@ import (
 // we can tell our objects from ones made by hand or by other tools.
 const Owner = 201
 
-// Addr is one IPv4 address on an interface.
+// Addr is one address (IPv4 or IPv6) on an interface.
 type Addr struct {
 	Interface string `json:"interface"`
-	Address   string `json:"address"` // CIDR with host bits, e.g. 10.0.0.1/16
+	Address   string `json:"address"` // CIDR with host bits, e.g. 10.0.0.1/16 or fd00::1/64
 }
 
 // LiveRoute is a route as it exists in the kernel right now.
@@ -39,7 +39,7 @@ type Kernel interface {
 	AddAddr(iface, cidr string) error
 	DelAddr(iface, cidr string) error
 
-	// ListRoutes returns routes of every table except "local".
+	// ListRoutes returns IPv4 and IPv6 routes of every table except "local".
 	ListRoutes() ([]LiveRoute, error)
 	// ReplaceRoute adds the route or overwrites the one with the same key.
 	ReplaceRoute(r model.Route) error
@@ -51,13 +51,16 @@ type Kernel interface {
 	DelRule(r model.Rule) error
 
 	// ApplyFirewall atomically replaces the mini-net-man nftables table.
-	// Only the table named "mini-net-man" is ever touched.
+	// Only the table named "mini-net-man" is ever touched. It is an `inet`
+	// table, so rules without an address match apply to both families.
 	ApplyFirewall(fw model.Firewall) error
 	// FirewallRuleset dumps the live table as text ("" when absent).
 	FirewallRuleset() (string, error)
 
-	IPForward() (bool, error)
-	SetIPForward(on bool) error
+	// IPForward and SetIPForward read and write net.ipv4.ip_forward, or
+	// net.ipv6.conf.all.forwarding when v6 is true.
+	IPForward(v6 bool) (bool, error)
+	SetIPForward(v6, on bool) error
 
 	// Watch emits a value whenever links, addresses or routes change.
 	Watch(ctx context.Context) (<-chan struct{}, error)
