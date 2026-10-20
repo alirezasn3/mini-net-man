@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --color-accent-50: #f0fdfa;
+  --color-accent-100: #ccfbf1;
+  --color-accent-500: #14b8a6;
+  --color-accent-600: #0d9488;
+  --color-accent-700: #0f766e;
+  --color-accent-800: #115e59;
+}
+
+@layer base {
+  html { color-scheme: light dark; }
+  body { @apply bg-slate-50 text-slate-800 antialiased dark:bg-slate-950 dark:text-slate-200; }
+  ::selection { @apply bg-accent-500/30; }
+}
+
+@layer components {
+  .card { @apply rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900; }
+  .btn { @apply inline-flex items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700; }
+  .btn-primary { @apply border-accent-700 bg-accent-700 text-white hover:bg-accent-800 dark:border-accent-600 dark:bg-accent-600 dark:text-white dark:hover:bg-accent-700; }
+  .btn-danger { @apply border-red-300 text-red-700 hover:bg-red-50 dark:border-red-900 dark:bg-transparent dark:text-red-400 dark:hover:bg-red-950; }
+  .btn-sm { @apply px-2 py-1 text-xs; }
+  .btn-ghost { @apply border-transparent bg-transparent shadow-none hover:bg-slate-200/70 dark:bg-transparent dark:hover:bg-slate-800; }
+  .input { @apply block w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:border-accent-600 focus:outline-2 focus:outline-offset-0 focus:outline-accent-600/30 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100; }
+  .label { @apply mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400; }
+  .th { @apply whitespace-nowrap px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400; }
+  .td { @apply px-3 py-2 align-middle; }
+  .badge { @apply inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium; }
+  .mono { @apply font-mono text-[0.8125rem]; }
+}

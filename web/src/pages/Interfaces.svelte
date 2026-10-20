@@ -1,0 +1,25 @@
+<script>
+  import Resource from '../lib/Resource.svelte'
+  import { refreshOverview } from '../lib/state.svelte.js'
+</script>
+
+<div class="space-y-5">
+  <p class="text-sm text-slate-500">Addresses you add here are kept on the interface by mini-net-man. Addresses configured by the OS (netplan, NetworkManager, wg-quick) are shown on the Overview and left alone.</p>
+  <Resource
+    title="Addresses"
+    endpoint="/api/addresses"
+    addLabel="Add address"
+    onchange={refreshOverview}
+    columns={[
+      { key: 'address', label: 'Address', mono: true },
+      { key: 'interface', label: 'Interface', mono: true },
+      { key: 'comment', label: 'Comment' },
+    ]}
+    fields={[
+      { key: 'address', label: 'Address', type: 'text', mono: true, placeholder: '10.0.0.1/16', help: 'IP with prefix length.' },
+      { key: 'interface', label: 'Interface', type: 'iface', mono: true, placeholder: 'wgServer' },
+      { key: 'comment', label: 'Comment', type: 'text', wide: true },
+    ]}
+    blank={() => ({ address: '', interface: '', comment: '', disabled: false })}
+  />
+</div>
