@@ -76,6 +76,10 @@ func (s *Server) Handler() http.Handler {
 		l, err := s.eng.Kernel().ListRules()
 		respond(w, orEmpty(l), err)
 	})
+	authed.HandleFunc("GET /api/sockets", func(w http.ResponseWriter, r *http.Request) {
+		l, err := s.eng.Kernel().Sockets()
+		respond(w, orEmpty(l), err)
+	})
 	authed.HandleFunc("GET /api/firewall/ruleset", s.ruleset)
 	authed.HandleFunc("GET /api/generated", s.generated)
 

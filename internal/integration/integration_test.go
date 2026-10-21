@@ -663,3 +663,71 @@ func TestRestartReconciles(t *testing.T) {
 	contains(t, "rules after restart", sh(t, "ip rule show"), "from 10.0.0.0/16 lookup 200")
 	contains(t, "nft after restart", sh(t, "nft list table inet mini-net-man"), "masquerade")
 }
+
+// ---- listening sockets -------------------------------------------------------
+
+func TestSockets(t *testing.T) {
+	topology(t)
+	start := func(args ...string) int {
+		c := exec.Command("nc", args...)
+		if err := c.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Process.Kill(); _ = c.Wait() })
+		return c.Process.Pid
+	}
+	v4 := start("-4", "-l", "-k", "9000")        // all IPv4 interfaces
+	v6 := start("-6", "-l", "-k", "9000")        // all IPv6 interfaces
+	lo := start("-l", "-k", "127.0.0.1", "9002") // loopback only
+	udp := start("-u", "-l", "10.0.0.1", "9001") // one specific address
+	time.Sleep(500 * time.Millisecond)
+
+	socks, err := kernel.NewLinux().Sockets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	find := func(proto string, port int) (model.Socket, bool) {
+		for _, s := range socks {
+			if s.Proto == proto && s.Port == port {
+				return s, true
+			}
+		}
+		return model.Socket{}, false
+	}
+	check := func(proto string, port int, addr, scope string, pid int) {
+		t.Helper()
+		s, ok := find(proto, port)
+		if !ok {
+			t.Errorf("%s/%d not listed; got %+v", proto, port, socks)
+			return
+		}
+		if s.Addr != addr || s.Scope != scope {
+			t.Errorf("%s/%d: addr=%s scope=%s, want %s/%s", proto, port, s.Addr, s.Scope, addr, scope)
+		}
+		if len(s.Procs) != 1 || s.Procs[0].PID != pid || s.Procs[0].Name != "nc" {
+			t.Errorf("%s/%d: processes %+v, want nc pid %d", proto, port, s.Procs, pid)
+		}
+		if s.User != "root" {
+			t.Errorf("%s/%d: user %q, want root", proto, port, s.User)
+		}
+	}
+	check("tcp", 9000, "0.0.0.0", "all", v4)
+	check("tcp6", 9000, "::", "all", v6)
+	check("tcp", 9002, "127.0.0.1", "local", lo)
+	check("udp", 9001, "10.0.0.1", "address", udp)
+
+	// A connection that is not a listener must not appear.
+	if out, err := try("nc -z -w1 127.0.0.1 9002"); err != nil {
+		t.Fatalf("connect: %v %s", err, out)
+	}
+	socks, _ = kernel.NewLinux().Sockets()
+	n := 0
+	for _, s := range socks {
+		if s.Port == 9002 {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("port 9002 listed %d times; established connections must not count as listeners", n)
+	}
+}

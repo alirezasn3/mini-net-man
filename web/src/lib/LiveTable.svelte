@@ -1,8 +1,9 @@
 <script>
   // Read-only table: a normal table on wide screens, one labelled card per row on phones,
   // so nothing runs off the right edge.
-  //   columns: [{ label, key?, render?(row), mono?, origin? }]
+  //   columns: [{ label, key?, render?(row), mono?, origin?, badge?(row) }]
   //   `origin` columns draw a badge: green when the row is owned by mini-net-man.
+  //   `badge` columns draw a badge with the Tailwind classes badge(row) returns.
   let { columns, rows, empty = 'Nothing here.' } = $props()
   const value = (c, r) => (c.render ? c.render(r) : (r[c.key] ?? ''))
 </script>
@@ -20,7 +21,9 @@
             {@const long = String(v).length > 26}
             <td class="td max-sm:flex max-sm:px-0 max-sm:py-0.5 {long ? 'max-sm:flex-col max-sm:gap-0.5' : 'max-sm:justify-between max-sm:gap-4'} {c.mono ? 'mono' : ''} {ci > 0 && (v === '' || v == null) ? 'max-sm:hidden' : ''}">
               <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{c.label}</span>
-              {#if c.origin}
+              {#if c.badge}
+                <span class="badge {c.badge(r)}">{v}</span>
+              {:else if c.origin}
                 <span class="badge {r.owned ? 'bg-accent-600/20 text-accent-300' : 'bg-slate-800 text-slate-400'}">{v}</span>
               {:else}
                 <span class="min-w-0 break-words {long ? 'max-sm:text-left' : 'max-sm:text-right'}">{v}</span>

@@ -6,6 +6,7 @@
   import Routes from './pages/Routes.svelte'
   import Rules from './pages/Rules.svelte'
   import Firewall from './pages/Firewall.svelte'
+  import Ports from './pages/Ports.svelte'
   import ClientRouting from './pages/ClientRouting.svelte'
   import Import from './pages/Import.svelte'
   import Settings from './pages/Settings.svelte'
@@ -16,6 +17,7 @@
     { path: 'routes', label: 'Routes', comp: Routes },
     { path: 'rules', label: 'Policy rules', comp: Rules },
     { path: 'firewall', label: 'Firewall', comp: Firewall },
+    { path: 'ports', label: 'Ports', comp: Ports },
     { path: 'client-routing', label: 'Client routing', comp: ClientRouting },
     { path: 'import', label: 'Import', comp: Import },
     { path: 'settings', label: 'Settings', comp: Settings },

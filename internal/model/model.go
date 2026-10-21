@@ -185,3 +185,23 @@ type Issue struct {
 	ID      string `json:"id"`
 	Message string `json:"message"`
 }
+
+// Socket is a listening TCP socket or a bound, unconnected UDP socket: one
+// line of `ss -tulnp`.
+type Socket struct {
+	Proto string `json:"proto"` // tcp, tcp6, udp, udp6
+	Addr  string `json:"addr"`  // local address the socket is bound to
+	Port  int    `json:"port"`
+	// Scope says who can reach it: "all" (bound to 0.0.0.0 or ::, so every
+	// interface), "local" (loopback only) or "address" (one specific address).
+	Scope  string       `json:"scope"`
+	Kernel bool         `json:"kernel,omitempty"` // owned by the kernel itself, such as WireGuard's UDP port
+	User   string       `json:"user,omitempty"`
+	Procs  []SocketProc `json:"procs,omitempty"`
+}
+
+// SocketProc is a process holding a socket open.
+type SocketProc struct {
+	PID  int    `json:"pid"`
+	Name string `json:"name"`
+}

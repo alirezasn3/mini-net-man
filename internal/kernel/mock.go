@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 
@@ -283,6 +284,24 @@ func (m *Mock) SetIPForward(v6, on bool) error {
 	defer m.mu.Unlock()
 	m.forward[fwdIdx(v6)] = on
 	return nil
+}
+
+// Sockets returns a believable listener list, including this very process.
+func (m *Mock) Sockets() ([]model.Socket, error) {
+	self := model.SocketProc{PID: os.Getpid(), Name: "mini-net-man"}
+	socks := []model.Socket{
+		{Proto: "tcp", Addr: "0.0.0.0", Port: 22, Scope: "all", User: "root", Procs: []model.SocketProc{{PID: 812, Name: "sshd"}}},
+		{Proto: "tcp6", Addr: "::", Port: 22, Scope: "all", User: "root", Procs: []model.SocketProc{{PID: 812, Name: "sshd"}}},
+		{Proto: "udp", Addr: "127.0.0.53", Port: 53, Scope: "local", User: "systemd-resolve", Procs: []model.SocketProc{{PID: 640, Name: "systemd-resolve"}}},
+		{Proto: "tcp", Addr: "127.0.0.53", Port: 53, Scope: "local", User: "systemd-resolve", Procs: []model.SocketProc{{PID: 640, Name: "systemd-resolve"}}},
+		{Proto: "udp", Addr: "0.0.0.0", Port: 51820, Scope: "all", Kernel: true},
+		{Proto: "udp6", Addr: "::", Port: 51820, Scope: "all", Kernel: true},
+		{Proto: "tcp", Addr: "0.0.0.0", Port: 8080, Scope: "all", User: "root", Procs: []model.SocketProc{self}},
+		{Proto: "tcp", Addr: "10.0.0.1", Port: 8443, Scope: "address", User: "www-data", Procs: []model.SocketProc{{PID: 1201, Name: "nginx"}, {PID: 1202, Name: "nginx"}, {PID: 1203, Name: "nginx"}}},
+		{Proto: "udp", Addr: "127.0.0.1", Port: 323, Scope: "local", User: "chrony", Procs: []model.SocketProc{{PID: 701, Name: "chronyd"}}},
+	}
+	sort.SliceStable(socks, func(i, j int) bool { return socks[i].Port < socks[j].Port })
+	return socks, nil
 }
 
 func (m *Mock) Watch(ctx context.Context) (<-chan struct{}, error) {

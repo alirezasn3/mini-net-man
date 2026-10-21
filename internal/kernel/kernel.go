@@ -62,6 +62,10 @@ type Kernel interface {
 	IPForward(v6 bool) (bool, error)
 	SetIPForward(v6, on bool) error
 
+	// Sockets lists listening TCP and bound UDP sockets with the process
+	// that owns each, like `ss -tulnp`.
+	Sockets() ([]model.Socket, error)
+
 	// Watch emits a value whenever links, addresses or routes change.
 	Watch(ctx context.Context) (<-chan struct{}, error)
 }
