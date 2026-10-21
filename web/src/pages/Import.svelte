@@ -35,6 +35,9 @@
     if (r) refreshOverview()
   }
 
+  // IPv4 / IPv6 label for any proposed item.
+  const fam = (x) =>
+    x.family === 'ipv6' || [x.dst, x.src, x.gateway, x.to_addr].some((a) => (a ?? '').includes(':')) ? 'IPv6' : x.family === 'ipv4' ? 'IPv4' : ''
   const ruleText = (r) => `${r.priority}: ${[r.src && 'from ' + r.src, r.dst && 'to ' + r.dst, r.iif && 'iif ' + r.iif].filter(Boolean).join(' ') || 'all'} ${r.action === 'lookup' || !r.action ? 'lookup ' + r.table : r.action}`
   const routeText = (r) => `${r.dst}${r.gateway ? ' via ' + r.gateway : ''}${r.dev ? ' dev ' + r.dev : ''} table ${r.table}`
   const fwText = (r) =>
@@ -49,6 +52,9 @@
         <div class="flex gap-1">
           <button class="btn btn-ghost btn-sm" onclick={() => list.forEach((x) => (sel[key][x.id] = true))}>All</button>
           <button class="btn btn-ghost btn-sm" onclick={() => list.forEach((x) => (sel[key][x.id] = false))}>None</button>
+          {#if list.some((x) => fam(x) === 'IPv6')}
+            <button class="btn btn-ghost btn-sm" onclick={() => list.forEach((x) => fam(x) === 'IPv6' && (sel[key][x.id] = false))}>Skip IPv6</button>
+          {/if}
         </div>
       </header>
       <ul class="divide-y divide-slate-100 dark:divide-slate-800">
@@ -57,6 +63,7 @@
             <label class="flex cursor-pointer items-center gap-3 px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800/40">
               <input type="checkbox" class="size-4 accent-accent-600" bind:checked={sel[key][x.id]} />
               <span class="mono flex-1">{text(x)}</span>
+              {#if fam(x)}<span class="badge {fam(x) === 'IPv6' ? 'bg-accent-100 text-accent-800 dark:bg-accent-800/40 dark:text-accent-100' : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400'}">{fam(x)}</span>{/if}
               <span class="badge bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400">{x.source}</span>
             </label>
           </li>
