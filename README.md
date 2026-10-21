@@ -15,13 +15,16 @@ IPv4 and IPv6 are both supported. Linux only for the real backend (`-mock` runs 
 
 ## Install
 
-Put the binary in its own folder (the config is created beside it), then run `install` as root. That is the whole setup:
+Download the binary from the [latest release](https://github.com/alirezasn3/mini-net-man/releases/latest) into its own folder (the config is created beside it), then run `install` as root. That is the whole setup. On the server (use `mini-net-man-linux-arm64` on ARM; `uname -m` says `aarch64`):
 
 ```sh
-ssh server 'mkdir -p ~/mini-net-man'
-scp bin/mini-net-man-linux-amd64 server:mini-net-man/mini-net-man
-ssh -t server 'sudo ~/mini-net-man/mini-net-man install'
+mkdir -p ~/mini-net-man && cd ~/mini-net-man
+curl -fL -o mini-net-man https://github.com/alirezasn3/mini-net-man/releases/latest/download/mini-net-man-linux-amd64
+chmod +x mini-net-man
+sudo ./mini-net-man install
 ```
+
+Each release also has a `checksums.txt` to verify the download against (`sha256sum -c`). To build from source instead, run `make linux` and copy `bin/mini-net-man-linux-*` over.
 
 `install` creates `config.yaml` **next to the binary** (unless you pass `-config`), writes and starts a systemd service that runs the binary in place, and prints the login. Re-run it after replacing the binary to restart on the new one. `uninstall` removes the service and keeps your config.
 
