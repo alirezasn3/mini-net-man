@@ -79,27 +79,31 @@
     <button class="btn btn-primary btn-sm" onclick={openNew}>+ {addLabel}</button>
   </header>
 
-  <div class="overflow-x-auto">
-    <table class="w-full text-sm">
-      <thead class="border-b border-slate-200 dark:border-slate-800">
+  <!-- Wide screens: a table. Phones: every row becomes a card (labels come from the column
+       names), so the Edit / Delete buttons never end up off-screen. -->
+  <div class="overflow-x-auto max-sm:overflow-visible">
+    <table class="w-full text-sm max-sm:block">
+      <thead class="border-b border-slate-200 max-sm:hidden dark:border-slate-800">
         <tr>
           {#each columns as col}<th class="th">{col.label}</th>{/each}
           <th class="th"></th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+      <tbody class="divide-y divide-slate-100 max-sm:block dark:divide-slate-800">
         {#each shown as item, i (item.id)}
           {@const bad = issuesFor(item.id)}
-          <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40 {item.disabled ? 'opacity-50' : ''}">
+          <tr class="hover:bg-slate-50 max-sm:block max-sm:px-4 max-sm:py-3 dark:hover:bg-slate-800/40 {item.disabled ? 'opacity-50' : ''}">
             {#each columns as col, ci}
-              <td class="td {col.mono ? 'mono' : ''}">
-                {cell(col, item)}
-                {#if ci === 0}
-                  {#if item.disabled}<span class="badge ml-2 bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400">disabled</span>{/if}
-                {/if}
+              {@const v = cell(col, item)}
+              <td class="td max-sm:flex max-sm:justify-between max-sm:gap-4 max-sm:px-0 max-sm:py-0.5 {col.mono ? 'mono' : ''} {ci > 0 && (v === '' || v == null) ? 'max-sm:hidden' : ''}">
+                <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{col.label}</span>
+                <span class="min-w-0 break-words max-sm:text-right">
+                  {v}
+                  {#if ci === 0 && item.disabled}<span class="badge ml-2 bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400">disabled</span>{/if}
+                </span>
               </td>
             {/each}
-            <td class="td whitespace-nowrap text-right">
+            <td class="td text-right whitespace-nowrap max-sm:flex max-sm:flex-wrap max-sm:justify-end max-sm:gap-1 max-sm:px-0 max-sm:pt-2 max-sm:whitespace-normal">
               {#if orderable}
                 <button class="btn btn-ghost btn-sm" disabled={i === 0} title="Move up" aria-label="Move up" onclick={() => move(item, i - 1)}>↑</button>
                 <button class="btn btn-ghost btn-sm" disabled={i === shown.length - 1} title="Move down" aria-label="Move down" onclick={() => move(item, i + 1)}>↓</button>
@@ -110,20 +114,24 @@
             </td>
           </tr>
           {#each bad as b}
-            <tr class="bg-red-50 dark:bg-red-950/40"><td class="px-3 py-1.5 text-xs text-red-700 dark:text-red-300" colspan={columns.length + 1}>Not applied: {b.message}</td></tr>
+            <tr class="bg-red-50 max-sm:block dark:bg-red-950/40"><td class="px-3 py-1.5 text-xs text-red-700 max-sm:block max-sm:px-4 dark:text-red-300" colspan={columns.length + 1}>Not applied: {b.message}</td></tr>
           {/each}
         {:else}
-          <tr><td class="td py-8 text-center text-slate-400" colspan={columns.length + 1}>Nothing here yet.</td></tr>
+          <tr class="max-sm:block"><td class="td py-8 text-center text-slate-400 max-sm:block" colspan={columns.length + 1}>Nothing here yet.</td></tr>
         {/each}
         {#each generated as item (item.id)}
-          <tr class="bg-slate-50/70 text-slate-500 dark:bg-slate-900/60 dark:text-slate-400">
+          <tr class="bg-slate-50/70 text-slate-500 max-sm:block max-sm:px-4 max-sm:py-3 dark:bg-slate-900/60 dark:text-slate-400">
             {#each columns as col, ci}
-              <td class="td {col.mono ? 'mono' : ''}">
-                {cell(col, item)}
-                {#if ci === 0}<span class="badge ml-2 bg-accent-100 text-accent-800 dark:bg-accent-800/40 dark:text-accent-100" title="Created by Client Routing">generated</span>{/if}
+              {@const v = cell(col, item)}
+              <td class="td max-sm:flex max-sm:justify-between max-sm:gap-4 max-sm:px-0 max-sm:py-0.5 {col.mono ? 'mono' : ''} {ci > 0 && (v === '' || v == null) ? 'max-sm:hidden' : ''}">
+                <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{col.label}</span>
+                <span class="min-w-0 break-words max-sm:text-right">
+                  {v}
+                  {#if ci === 0}<span class="badge ml-2 bg-accent-100 text-accent-800 dark:bg-accent-800/40 dark:text-accent-100" title="Created by Client Routing">generated</span>{/if}
+                </span>
               </td>
             {/each}
-            <td class="td"></td>
+            <td class="td max-sm:hidden"></td>
           </tr>
         {/each}
       </tbody>
@@ -131,14 +139,14 @@
   </div>
 </section>
 
-<dialog bind:this={dialog} class="m-auto w-[min(34rem,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-0 text-slate-800 shadow-xl backdrop:bg-slate-950/50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+<dialog bind:this={dialog} class="m-auto max-h-[calc(100dvh-2rem)] w-[min(34rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-slate-200 bg-white p-0 text-slate-800 shadow-xl backdrop:bg-slate-950/50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
   {#if draft}
     <form onsubmit={save} class="p-5">
       <h3 class="mb-4 text-base font-semibold">{isNew ? addLabel : 'Edit ' + addLabel.replace(/^Add /, '')}</h3>
-      <div class="grid grid-cols-2 gap-x-3 gap-y-3">
+      <div class="grid grid-cols-1 gap-x-3 gap-y-3 sm:grid-cols-2">
         {#each fields as f}
           {#if !f.show || f.show(draft)}
-            <div class={f.wide ? 'col-span-2' : ''}>
+            <div class={f.wide ? 'sm:col-span-2' : ''}>
               {#if f.type === 'checkbox'}
                 <label class="flex items-center gap-2 pt-5 text-sm">
                   <input type="checkbox" bind:checked={draft[f.key]} class="size-4 accent-accent-600" />

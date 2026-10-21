@@ -24,9 +24,9 @@
 
 {#if o}
   <div class="space-y-5">
-    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
       {#each [['Addresses', o.counts.addresses, '#/interfaces'], ['Routes', o.counts.routes, '#/routes'], ['Policy rules', o.counts.rules, '#/rules'], ['Firewall rules', o.counts.firewall, '#/firewall']] as [label, n, href]}
-        <a {href} class="card block p-4 transition-colors hover:border-accent-600">
+        <a {href} class="card block p-3 transition-colors hover:border-accent-600 sm:p-4">
           <div class="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
           <div class="mt-1 text-2xl font-semibold tabular-nums">{n}</div>
         </a>
@@ -60,20 +60,20 @@
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead class="border-b border-slate-200 dark:border-slate-800"><tr>
-            {#each ['Name', 'Type', 'State', 'Addresses', 'MTU', 'Rx', 'Tx'] as h}<th class="th">{h}</th>{/each}
+            {#each ['Name', 'Type', 'State', 'Addresses', 'MTU', 'Rx', 'Tx'] as h, i}<th class="th {[1, 4, 5, 6].includes(i) ? 'max-sm:hidden' : ''}">{h}</th>{/each}
           </tr></thead>
           <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
             {#each o.links as l (l.name)}
               <tr>
                 <td class="td mono font-medium">{l.name}</td>
-                <td class="td text-slate-500">{l.type}</td>
+                <td class="td text-slate-500 max-sm:hidden">{l.type}</td>
                 <td class="td">
                   <span class="badge {l.up ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400'}">{l.up ? 'up' : 'down'}</span>
                 </td>
-                <td class="td mono">{(l.addrs ?? []).join(', ')}</td>
-                <td class="td tabular-nums text-slate-500">{l.mtu}</td>
-                <td class="td tabular-nums text-slate-500">{fmt(l.rx_bytes)}</td>
-                <td class="td tabular-nums text-slate-500">{fmt(l.tx_bytes)}</td>
+                <td class="td mono break-words">{(l.addrs ?? []).join(', ')}</td>
+                <td class="td tabular-nums text-slate-500 max-sm:hidden">{l.mtu}</td>
+                <td class="td tabular-nums text-slate-500 max-sm:hidden">{fmt(l.rx_bytes)}</td>
+                <td class="td tabular-nums text-slate-500 max-sm:hidden">{fmt(l.tx_bytes)}</td>
               </tr>
             {/each}
           </tbody>
