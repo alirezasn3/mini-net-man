@@ -8,6 +8,7 @@ export const app = $state({
   safe: { active: false, remaining_secs: 0, timeout_secs: 30 },
   toasts: [],
   links: [],
+  update: null, // latest result of GET /api/update
   epoch: 0, // bumped when state may have changed under the pages (safe-mode rollback)
 })
 
@@ -63,4 +64,12 @@ export function syncSafeTimer() {
     clearInterval(beat)
     beat = null
   }
+}
+
+// Ask the server about updates. Without `refresh` it answers from its cache.
+export async function loadUpdate(refresh = false) {
+  try {
+    app.update = await api('GET', '/api/update' + (refresh ? '?refresh=1' : ''))
+  } catch {}
+  return app.update
 }

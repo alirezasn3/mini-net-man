@@ -19,6 +19,16 @@ type Config struct {
 	Rules         []Rule        `yaml:"rules" json:"rules"`
 	Firewall      Firewall      `yaml:"firewall" json:"firewall"`
 	ClientRouting ClientRouting `yaml:"client_routing" json:"client_routing"`
+	Update        Update        `yaml:"update" json:"update"`
+}
+
+// Update configures self-update from GitHub Releases.
+type Update struct {
+	// Repo is "owner/name"; empty means the project's own repository.
+	Repo string `yaml:"repo,omitempty" json:"repo"`
+	// NoAutoCheck stops the panel from asking GitHub for the latest version
+	// when you log in. Checking by hand still works.
+	NoAutoCheck bool `yaml:"no_auto_check,omitempty" json:"no_auto_check"`
 }
 
 type Web struct {

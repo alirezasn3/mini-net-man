@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alirezasn3/mini-net-man/internal/detect"
@@ -21,6 +22,7 @@ import (
 	"github.com/alirezasn3/mini-net-man/internal/importer"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
+	"github.com/alirezasn3/mini-net-man/internal/update"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -33,10 +35,17 @@ type Server struct {
 
 	configPath string
 	scan       *importer.Proposal
+
+	version string
+	exe     string     // this binary's path, resolved before any update can rename it
+	upMu    sync.Mutex // guards upCache, pending and serialises installs
+	upCache *updateInfo
+	pending string // version installed on disk but not yet running
 }
 
-func New(eng *engine.Engine, ui fs.FS, configPath string, mock bool, log *slog.Logger) *Server {
-	return &Server{eng: eng, ui: ui, configPath: configPath, mock: mock, log: log, sess: newSessions()}
+func New(eng *engine.Engine, ui fs.FS, configPath string, mock bool, version string, log *slog.Logger) *Server {
+	exe, _ := update.Executable()
+	return &Server{eng: eng, ui: ui, configPath: configPath, mock: mock, version: version, exe: exe, log: log, sess: newSessions()}
 }
 
 type ctxKey struct{}
@@ -140,6 +149,9 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, map[string]any{"listen": wc.Listen, "port": wc.Port, "allowed_ips": orEmpty(wc.AllowedIPs), "users": names, "tls": wc.TLSCert != ""})
 	})
 	authed.HandleFunc("PUT /api/settings/web", s.putWebSettings)
+
+	authed.HandleFunc("GET /api/update", s.updateStatus)
+	authed.HandleFunc("POST /api/update/install", s.updateInstall)
 
 	authed.HandleFunc("POST /api/import/scan", s.importScan)
 	authed.HandleFunc("POST /api/import/apply", s.importApply)
@@ -321,7 +333,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	host, _ := os.Hostname()
 	cfg := s.eng.Config()
 	writeJSON(w, map[string]any{
-		"hostname": host, "mock": s.mock,
+		"hostname": host, "mock": s.mock, "version": s.version,
 		"links": links, "forwarding": map[string]any{
 			"ipv4": map[string]bool{"on": fwd4, "managed": cfg.Sysctl.IPForward != nil},
 			"ipv6": map[string]bool{"on": fwd6, "managed": cfg.Sysctl.IPv6Forward != nil},

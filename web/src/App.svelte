@@ -1,6 +1,6 @@
 <script>
   import { api, setUnauthorizedHandler } from './lib/api.js'
-  import { app, act, refreshOverview, syncSafeTimer, setSafe } from './lib/state.svelte.js'
+  import { app, act, refreshOverview, syncSafeTimer, setSafe, loadUpdate } from './lib/state.svelte.js'
   import Overview from './pages/Overview.svelte'
   import Interfaces from './pages/Interfaces.svelte'
   import Routes from './pages/Routes.svelte'
@@ -34,6 +34,7 @@
       app.user = (await api('GET', '/api/me')).user
       await refreshOverview()
       syncSafeTimer()
+      loadUpdate()
     } catch {
       app.user = null
     }
@@ -59,6 +60,7 @@
       app.user = (await api('POST', '/api/login', { username: login.username, password: login.password })).user
       login.password = ''
       await refreshOverview()
+      loadUpdate()
     } catch (err) {
       login.error = err.message
     }
@@ -100,6 +102,7 @@
         <div class="leading-tight">
           <div class="text-sm font-semibold">mini-net-man</div>
           <div class="text-xs text-slate-500">{app.overview?.hostname ?? ''}{app.overview?.mock ? ' · mock' : ''}</div>
+          {#if app.overview?.version}<div class="mono text-xs text-slate-400">{app.overview.version}</div>{/if}
         </div>
       </div>
       <nav class="flex gap-1 overflow-x-auto px-2 pb-2 lg:flex-col lg:overflow-visible" aria-label="Main">
@@ -114,7 +117,12 @@
 
     <div class="min-w-0">
       <header class="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/90 px-5 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/90">
-        <h1 class="text-base font-semibold">{page.label}</h1>
+        <div class="flex items-center gap-3">
+          <h1 class="text-base font-semibold">{page.label}</h1>
+          {#if app.update?.available}
+            <a href="#/settings" class="badge bg-accent-100 text-accent-800 hover:bg-accent-500/30 dark:bg-accent-800/40 dark:text-accent-100">Update {app.update.latest} available</a>
+          {/if}
+        </div>
         {#if app.safe.active}
           <div class="flex flex-wrap items-center gap-2 rounded-lg border border-amber-400 bg-amber-50 px-3 py-1.5 text-sm dark:border-amber-700 dark:bg-amber-950/60" role="status">
             <span class="font-medium text-amber-900 dark:text-amber-200">Safe mode: changes revert in {app.safe.remaining_secs}s unless you stay connected and confirm</span>

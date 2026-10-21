@@ -383,6 +383,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid chain policy %q", p)
 		}
 	}
+	if r := c.Update.Repo; r != "" {
+		if o, n, ok := strings.Cut(r, "/"); !ok || o == "" || n == "" || strings.ContainsAny(r, " \t\n?#") || strings.Count(r, "/") != 1 {
+			return fmt.Errorf("update.repo must look like owner/name, got %q", r)
+		}
+	}
 	for _, cl := range c.ClientRouting.Clients {
 		if err := check("client route", cl.ID); err != nil {
 			return err

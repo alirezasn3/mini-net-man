@@ -1,0 +1,54 @@
+# Push a tag like v0.1.0 and this builds the Linux binaries and publishes a
+# GitHub Release. `mini-net-man update` (and the panel's Updates card) install
+# from it, so the asset names and checksums.txt must stay as they are.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the web UI
+        run: cd web && npm ci && npm run build
+
+      - name: Test
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build binaries
+        run: |
+          mkdir dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch \
+              go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o dist/mini-net-man-linux-$arch ./cmd/mini-net-man
+          done
+          cd dist && sha256sum mini-net-man-linux-* > checksums.txt && cat checksums.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          flags=""
+          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac  # v1.0.0-rc1 is not offered as "latest"
+          gh release create "$GITHUB_REF_NAME" dist/mini-net-man-linux-amd64 dist/mini-net-man-linux-arm64 dist/checksums.txt \
+            --title "$GITHUB_REF_NAME" --generate-notes $flags

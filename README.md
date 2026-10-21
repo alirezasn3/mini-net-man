@@ -33,6 +33,32 @@ sudo ~/mini-net-man/mini-net-man install -allow 203.0.113.7 -port 8080
 
 To try it first without installing anything, run `sudo ~/mini-net-man/mini-net-man run` in the foreground. Stopping it does not undo the rules it created.
 
+## Updating
+
+Updates come from GitHub Releases. Once a release build is installed (see *Releasing* below), update it in place:
+
+```sh
+sudo ~/mini-net-man/mini-net-man update          # install the latest release and restart the service
+sudo ~/mini-net-man/mini-net-man update -check   # only say whether a newer one exists
+sudo ~/mini-net-man/mini-net-man update -rollback   # go back to the version before
+```
+
+The panel does the same from **Settings → Updates**: it looks up the latest release when you log in, shows an *Update available* badge, and installs on one click. Either way the new binary is checked against the release's `checksums.txt`, test-run (`<binary> version` must print the release tag), and only then swapped in; the old one is kept as `mini-net-man.old`. Your rules stay in the kernel while the service restarts, and the config is untouched. The panel refuses to update during safe mode.
+
+`update -version v0.1.0` installs a specific release (also to go back), `update -force` reinstalls. A binary built from a branch has no release version and refuses plain `update`; install a release build once and it works from then on. To turn off the lookup at login, set `update: {no_auto_check: true}` in the config.
+
+Private repository or GitHub Enterprise: set `MINI_NET_MAN_GITHUB_TOKEN` and/or `MINI_NET_MAN_API` in the service's environment, and `update: {repo: owner/name}` in the config.
+
+## Releasing
+
+Push a tag; `.github/workflows/release.yml` tests, builds `mini-net-man-linux-amd64` and `-arm64` with the tag stamped in as the version, and publishes them with a `checksums.txt`:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+A tag with a dash (`v1.0.0-rc1`) is published as a pre-release and is not offered as the latest. `make linux VERSION=v0.1.0` builds the same binaries locally. The repository defaults to `alirezasn3/mini-net-man`; change `DefaultRepo` in `internal/update/update.go` if yours differs.
+
 ## IPv6
 
 Everything works for both families. The family of a route comes from its destination (`::/0` is the IPv6 default; `default` with an IPv6 gateway also works). The family of a policy rule comes from its `from`/`to`, or its Family field. Firewall rules live in one `inet` table: a rule with no address and no Family applies to **both** families, so set Family to `IPv4` for things like a v4-only masquerade. Client routing routes each client within its own family. Imported iptables/ufw rules are pinned to the family they came from. Serve the panel over IPv6 by setting `listen` to `::`.

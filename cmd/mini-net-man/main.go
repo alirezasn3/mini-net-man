@@ -16,12 +16,14 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	goSystemd "github.com/alirezasn3/go-systemd"
 	"github.com/alirezasn3/mini-net-man/internal/engine"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
 	"github.com/alirezasn3/mini-net-man/internal/server"
+	"github.com/alirezasn3/mini-net-man/internal/update"
 	"github.com/alirezasn3/mini-net-man/web"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
@@ -36,6 +38,7 @@ const usage = `usage: mini-net-man [command] [flags]
 commands:
   run         start the daemon and web panel (default)
   install     set everything up and start it as a systemd service
+  update      install the latest release from GitHub (-check to only look)
   uninstall   stop and remove the systemd service (keeps your config)
   passwd USER set (or create) a panel user's password
   version     print the version
@@ -47,6 +50,14 @@ install flags:
                  addition to this machine (the default is this machine only)
   -port N        panel port (default 8080)
   -config PATH   config file
+
+update flags:
+  -check         only report whether a newer release exists
+  -version TAG   install that release instead of the latest (can go back)
+  -rollback      go back to the version before the last update
+  -force         reinstall even if already up to date
+  -no-restart    don't restart the service afterwards
+  -repo OWNER/NAME   GitHub repository (default: the project's own)
 
 run and passwd flags:
   -config PATH   config file
@@ -65,6 +76,8 @@ func main() {
 		err = run(args)
 	case "install":
 		err = install(args)
+	case "update":
+		err = updateCmd(args)
 	case "uninstall":
 		err = goSystemd.DeleteService(serviceName)
 	case "passwd":
@@ -157,7 +170,7 @@ func run(args []string) error {
 	defer stop()
 	go eng.Run(ctx)
 
-	return server.New(eng, web.FS(), f.config, f.mock, log).ListenAndServe(ctx)
+	return server.New(eng, web.FS(), f.config, f.mock, version, log).ListenAndServe(ctx)
 }
 
 // ensureConfig loads the config, writing a default one (with a random admin
@@ -293,6 +306,112 @@ func splitList(s string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+// updateCmd implements `mini-net-man update`.
+func updateCmd(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	check := fs.Bool("check", false, "only report whether a newer release exists")
+	want := fs.String("version", "", "release tag to install")
+	rollback := fs.Bool("rollback", false, "go back to the previous version")
+	force := fs.Bool("force", false, "reinstall even if up to date")
+	noRestart := fs.Bool("no-restart", false, "do not restart the service")
+	repo := fs.String("repo", "", "GitHub repository, owner/name")
+	api := fs.String("api", "", "GitHub API base URL (GitHub Enterprise, or tests)")
+	cfgFlag := fs.String("config", "", "config file (for update.repo)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	exe, err := update.Executable()
+	if err != nil {
+		return err
+	}
+
+	if *rollback {
+		if err := update.Rollback(exe); err != nil {
+			return err
+		}
+		fmt.Println("Went back to the previous version.")
+		return restartAfter(*noRestart)
+	}
+
+	if *repo == "" {
+		cfgPath := *cfgFlag
+		if cfgPath == "" {
+			cfgPath = defaultConfigPath()
+		}
+		if cfg, ok, err := engine.LoadConfig(cfgPath); err == nil && ok {
+			*repo = cfg.Update.Repo
+		}
+	}
+	client := update.New(*repo)
+	if *api != "" {
+		client.APIBase = strings.TrimRight(*api, "/")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	var rel *update.Release
+	if *want != "" {
+		rel, err = client.ByTag(ctx, *want)
+	} else {
+		rel, err = client.Latest(ctx)
+	}
+	if err != nil {
+		return err
+	}
+
+	newer, cmpErr := update.Newer(version, rel.Tag)
+	fmt.Printf("installed: %s\nlatest:    %s  %s\n", version, rel.Tag, rel.URL)
+	switch {
+	case *check:
+		switch {
+		case cmpErr != nil:
+			fmt.Println("This build has no release version, so it can't tell. Use `update -force` to install the latest release anyway.")
+		case newer:
+			fmt.Printf("A newer release is available. Install it with: sudo %s update\n", exe)
+		default:
+			fmt.Println("Up to date.")
+		}
+		return nil
+	case *want == "" && cmpErr == nil && !newer && !*force:
+		fmt.Println("Already up to date.")
+		return nil
+	case cmpErr != nil && !*force && *want == "":
+		return fmt.Errorf("%w; use -force to install %s anyway, or -version to pick a release", cmpErr, rel.Tag)
+	}
+
+	fmt.Printf("Downloading %s ...\n", update.AssetName())
+	done, err := client.Install(ctx, rel, exe)
+	if err != nil {
+		return err
+	}
+	if done.Previous != "" {
+		fmt.Printf("Updated %s -> %s (previous binary kept as %s; `update -rollback` goes back)\n", version, rel.Tag, done.Previous)
+	} else {
+		fmt.Printf("Reinstalled %s.\n", rel.Tag)
+	}
+	return restartAfter(*noRestart)
+}
+
+// restartAfter restarts the service on the new binary, if there is one.
+func restartAfter(skip bool) error {
+	st, err := goSystemd.StatusService(serviceName)
+	if err != nil || st == nil || !st.Exists || !st.Active {
+		fmt.Println("The service is not running; start it with `sudo ./mini-net-man install`, or run the new binary yourself.")
+		return nil
+	}
+	if skip {
+		fmt.Println("Restart it to use the new version: sudo systemctl restart " + serviceName)
+		return nil
+	}
+	if err := update.RestartService(serviceName, false); err != nil {
+		fmt.Println("Could not restart the service automatically:", err)
+		fmt.Println("Restart it yourself: sudo systemctl restart " + serviceName)
+		return nil
+	}
+	fmt.Println("Restarted the service.")
+	return nil
 }
 
 func passwd(args []string) error {
