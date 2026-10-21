@@ -58,4 +58,6 @@
   .td { @apply px-3 py-2 align-middle; }
   .badge { @apply inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium; }
   .mono { @apply font-mono text-[0.8125rem]; }
+  /* nft listings: keep the indentation but wrap long lines instead of scrolling sideways. */
+  .ruleset { @apply max-h-96 overflow-auto rounded-md bg-slate-950 p-3 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap; }
 }

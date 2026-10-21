@@ -1,6 +1,7 @@
 <script>
   import { api } from '../lib/api.js'
   import Resource from '../lib/Resource.svelte'
+  import Nft from '../lib/Nft.svelte'
   import { act, refreshOverview } from '../lib/state.svelte.js'
 
   let policy = $state({ input: 'accept', forward: 'accept', output: 'accept' })
@@ -107,11 +108,11 @@
       <div class="grid grid-cols-1 gap-4 p-4 lg:grid-cols-2">
         <div class="min-w-0">
           <h3 class="label">What will be applied</h3>
-          <pre class="mono max-h-96 overflow-auto rounded-md bg-slate-100 p-3 dark:bg-slate-950">{ruleset.desired}</pre>
+          <Nft text={ruleset.desired} />
         </div>
         <div class="min-w-0">
           <h3 class="label">What the kernel has (nft list)</h3>
-          <pre class="mono max-h-96 overflow-auto rounded-md bg-slate-100 p-3 dark:bg-slate-950">{ruleset.live || '(table not present, or nft is not installed)'}</pre>
+          <Nft text={ruleset.live || '(table not present, or nft is not installed)'} />
         </div>
       </div>
     {/if}

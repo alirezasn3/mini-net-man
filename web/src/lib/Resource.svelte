@@ -95,9 +95,10 @@
           <tr class="hover:bg-slate-50 max-sm:block max-sm:px-4 max-sm:py-3 dark:hover:bg-slate-800/40 {item.disabled ? 'opacity-50' : ''}">
             {#each columns as col, ci}
               {@const v = cell(col, item)}
-              <td class="td max-sm:flex max-sm:justify-between max-sm:gap-4 max-sm:px-0 max-sm:py-0.5 {col.mono ? 'mono' : ''} {ci > 0 && (v === '' || v == null) ? 'max-sm:hidden' : ''}">
+              {@const long = String(v).length > 26}
+              <td class="td max-sm:flex max-sm:px-0 max-sm:py-0.5 {long ? 'max-sm:flex-col max-sm:gap-0.5' : 'max-sm:justify-between max-sm:gap-4'} {col.mono ? 'mono' : ''} {ci > 0 && (v === '' || v == null) ? 'max-sm:hidden' : ''}">
                 <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{col.label}</span>
-                <span class="min-w-0 break-words max-sm:text-right">
+                <span class="min-w-0 break-words {long ? 'max-sm:text-left' : 'max-sm:text-right'}">
                   {v}
                   {#if ci === 0 && item.disabled}<span class="badge ml-2 bg-slate-800 text-slate-400">disabled</span>{/if}
                 </span>
@@ -123,9 +124,10 @@
           <tr class="bg-slate-50/70 text-slate-500 max-sm:block max-sm:px-4 max-sm:py-3 dark:bg-slate-900/60 dark:text-slate-400">
             {#each columns as col, ci}
               {@const v = cell(col, item)}
-              <td class="td max-sm:flex max-sm:justify-between max-sm:gap-4 max-sm:px-0 max-sm:py-0.5 {col.mono ? 'mono' : ''} {ci > 0 && (v === '' || v == null) ? 'max-sm:hidden' : ''}">
+              {@const long = String(v).length > 26}
+              <td class="td max-sm:flex max-sm:px-0 max-sm:py-0.5 {long ? 'max-sm:flex-col max-sm:gap-0.5' : 'max-sm:justify-between max-sm:gap-4'} {col.mono ? 'mono' : ''} {ci > 0 && (v === '' || v == null) ? 'max-sm:hidden' : ''}">
                 <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{col.label}</span>
-                <span class="min-w-0 break-words max-sm:text-right">
+                <span class="min-w-0 break-words {long ? 'max-sm:text-left' : 'max-sm:text-right'}">
                   {v}
                   {#if ci === 0}<span class="badge ml-2 bg-accent-600/20 text-accent-300" title="Created by Client Routing">generated</span>{/if}
                 </span>

@@ -17,12 +17,13 @@
         <tr class="max-sm:block max-sm:px-4 max-sm:py-3">
           {#each columns as c, ci}
             {@const v = value(c, r)}
-            <td class="td max-sm:flex max-sm:justify-between max-sm:gap-4 max-sm:px-0 max-sm:py-0.5 {c.mono ? 'mono' : ''} {ci > 0 && (v === '' || v == null) ? 'max-sm:hidden' : ''}">
+            {@const long = String(v).length > 26}
+            <td class="td max-sm:flex max-sm:px-0 max-sm:py-0.5 {long ? 'max-sm:flex-col max-sm:gap-0.5' : 'max-sm:justify-between max-sm:gap-4'} {c.mono ? 'mono' : ''} {ci > 0 && (v === '' || v == null) ? 'max-sm:hidden' : ''}">
               <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{c.label}</span>
               {#if c.origin}
                 <span class="badge {r.owned ? 'bg-accent-600/20 text-accent-300' : 'bg-slate-800 text-slate-400'}">{v}</span>
               {:else}
-                <span class="min-w-0 break-words max-sm:text-right">{v}</span>
+                <span class="min-w-0 break-words {long ? 'max-sm:text-left' : 'max-sm:text-right'}">{v}</span>
               {/if}
             </td>
           {/each}
