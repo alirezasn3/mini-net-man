@@ -1,6 +1,7 @@
 <script>
   import { api } from '../lib/api.js'
   import Resource from '../lib/Resource.svelte'
+  import LiveTable from '../lib/LiveTable.svelte'
   import { refreshOverview } from '../lib/state.svelte.js'
 
   let live = $state([])
@@ -65,25 +66,17 @@
       </div>
     </header>
     {#if showLive}
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="border-b border-slate-200 dark:border-slate-800"><tr>
-            {#each ['Destination', 'Gateway', 'Interface', 'Table', 'Metric', 'Origin'] as h}<th class="th">{h}</th>{/each}
-          </tr></thead>
-          <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-            {#each shown as r}
-              <tr>
-                <td class="td mono">{r.dst}{r.type && r.type !== 'unicast' ? ` (${r.type})` : ''}</td>
-                <td class="td mono">{r.gateway}</td>
-                <td class="td mono">{r.dev}</td>
-                <td class="td">{r.table}</td>
-                <td class="td">{r.metric || ''}</td>
-                <td class="td"><span class="badge {r.owned ? 'bg-accent-600/20 text-accent-300' : 'bg-slate-800 text-slate-400'}">{r.owned ? 'mini-net-man' : r.proto}</span></td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
+      <LiveTable
+        rows={shown}
+        columns={[
+          { label: 'Destination', mono: true, render: (r) => r.dst + (r.type && r.type !== 'unicast' ? ` (${r.type})` : '') },
+          { label: 'Gateway', key: 'gateway', mono: true },
+          { label: 'Interface', key: 'dev', mono: true },
+          { label: 'Table', key: 'table' },
+          { label: 'Metric', render: (r) => r.metric || '' },
+          { label: 'Origin', origin: true, render: (r) => (r.owned ? 'mini-net-man' : r.proto) },
+        ]}
+      />
     {/if}
   </section>
 </div>

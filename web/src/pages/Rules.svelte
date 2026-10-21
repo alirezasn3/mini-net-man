@@ -1,6 +1,7 @@
 <script>
   import { api } from '../lib/api.js'
   import Resource from '../lib/Resource.svelte'
+  import LiveTable from '../lib/LiveTable.svelte'
   import { refreshOverview } from '../lib/state.svelte.js'
 
   let live = $state([])
@@ -60,21 +61,15 @@
       <button class="btn btn-sm" onclick={() => { showLive = !showLive; reload() }}>{showLive ? 'Hide' : 'Show'}</button>
     </header>
     {#if showLive}
-      <table class="w-full text-sm">
-        <thead class="border-b border-slate-200 dark:border-slate-800"><tr>
-          {#each ['Priority', 'Match', 'Action', 'Origin'] as h}<th class="th">{h}</th>{/each}
-        </tr></thead>
-        <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-          {#each live as r}
-            <tr>
-              <td class="td mono">{r.priority}</td>
-              <td class="td mono">{match(r)}</td>
-              <td class="td mono">{action(r)}</td>
-              <td class="td"><span class="badge {r.owned ? 'bg-accent-600/20 text-accent-300' : 'bg-slate-800 text-slate-400'}">{r.owned ? 'mini-net-man' : 'system / manual'}</span></td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+      <LiveTable
+        rows={live}
+        columns={[
+          { label: 'Priority', key: 'priority', mono: true },
+          { label: 'Match', mono: true, render: match },
+          { label: 'Action', mono: true, render: action },
+          { label: 'Origin', origin: true, render: (r) => (r.owned ? 'mini-net-man' : 'system / manual') },
+        ]}
+      />
     {/if}
   </section>
 </div>

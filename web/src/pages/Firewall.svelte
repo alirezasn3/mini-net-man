@@ -104,12 +104,12 @@
       <button class="btn btn-sm" onclick={() => { showRuleset = !showRuleset; reload() }}>{showRuleset ? 'Hide' : 'Show'}</button>
     </header>
     {#if showRuleset}
-      <div class="grid gap-4 p-4 lg:grid-cols-2">
-        <div>
+      <div class="grid grid-cols-1 gap-4 p-4 lg:grid-cols-2">
+        <div class="min-w-0">
           <h3 class="label">What will be applied</h3>
           <pre class="mono max-h-96 overflow-auto rounded-md bg-slate-100 p-3 dark:bg-slate-950">{ruleset.desired}</pre>
         </div>
-        <div>
+        <div class="min-w-0">
           <h3 class="label">What the kernel has (nft list)</h3>
           <pre class="mono max-h-96 overflow-auto rounded-md bg-slate-100 p-3 dark:bg-slate-950">{ruleset.live || '(table not present, or nft is not installed)'}</pre>
         </div>
