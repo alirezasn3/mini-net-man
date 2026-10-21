@@ -1,7 +1,8 @@
 <script>
   // Read-only table: a normal table on wide screens, one labelled card per row on phones,
   // so nothing runs off the right edge.
-  //   columns: [{ label, key?, render?(row), mono?, origin?, badge?(row) }]
+  //   columns: [{ label, key?, render?(row), mono?, origin?, badge?(row), sub?(row) }]
+  //   `sub` adds a smaller muted second line under the value.
   //   `origin` columns draw a badge: green when the row is owned by mini-net-man.
   //   `badge` columns draw a badge with the Tailwind classes badge(row) returns.
   let { columns, rows, empty = 'Nothing here.' } = $props()
@@ -26,7 +27,10 @@
               {:else if c.origin}
                 <span class="badge {r.owned ? 'bg-accent-600/20 text-accent-300' : 'bg-slate-800 text-slate-400'}">{v}</span>
               {:else}
-                <span class="min-w-0 break-words {long ? 'max-sm:text-left' : 'max-sm:text-right'}">{v}</span>
+                <span class="min-w-0 break-words {long ? 'max-sm:text-left' : 'max-sm:text-right'}">
+                  {v}
+                  {#if c.sub && c.sub(r)}<span class="mono block text-xs text-slate-500">{c.sub(r)}</span>{/if}
+                </span>
               {/if}
             </td>
           {/each}

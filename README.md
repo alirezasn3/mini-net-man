@@ -7,6 +7,7 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 - **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically.
 - **Client routing** (optional): send chosen clients out through a chosen interface. It only generates ordinary routes, rules and firewall entries, shown as *generated*.
 - **Ports**: which program is listening on which port (like `ss -tulnp`), and whether it is reachable from every interface or only this machine.
+- **Connections**: the kernel's connection-tracking table: every connection, including your VPN clients' traffic passing through. Each is labelled with its client, the exit interface and the NAT applied, and optionally bytes up and down. Filter by client, state or protocol.
 - **Import**: adopts existing `ip rule`/`ip route`, `iptables-save`, ufw and iptables-persistent rules.
 - **Safe mode**: changes revert automatically unless you confirm, or if the browser disconnects.
 

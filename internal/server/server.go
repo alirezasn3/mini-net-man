@@ -13,10 +13,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/alirezasn3/mini-net-man/internal/conns"
 	"github.com/alirezasn3/mini-net-man/internal/detect"
 	"github.com/alirezasn3/mini-net-man/internal/engine"
 	"github.com/alirezasn3/mini-net-man/internal/importer"
@@ -80,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 		l, err := s.eng.Kernel().Sockets()
 		respond(w, orEmpty(l), err)
 	})
+	authed.HandleFunc("GET /api/connections", s.connections)
 	authed.HandleFunc("GET /api/firewall/ruleset", s.ruleset)
 	authed.HandleFunc("GET /api/generated", s.generated)
 
@@ -121,7 +124,9 @@ func (s *Server) Handler() http.Handler {
 		})
 	})
 	authed.HandleFunc("PUT /api/sysctl", func(w http.ResponseWriter, r *http.Request) {
-		var in model.Sysctl
+		// Start from what is configured, so a request that mentions one
+		// setting leaves the others as they are. An explicit null clears one.
+		in := s.eng.Config().Sysctl
 		if !decode(w, r, &in) {
 			return
 		}
@@ -653,4 +658,37 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return nil
 	}
 	return err
+}
+
+// connections serves the connection-tracking table, enriched and filtered.
+// Query: q, proto, kind (forwarded|incoming|outgoing|local), state, client
+// (an original source address), sort (client|data|expiry|dest), limit.
+func (s *Server) connections(w http.ResponseWriter, r *http.Request) {
+	info, all, err := s.eng.Kernel().Conntrack()
+	if err != nil {
+		httpErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !info.Available {
+		writeJSON(w, map[string]any{"info": info, "summary": conns.Summary{ByState: map[string]int{}, Clients: []conns.ClientCount{}, Exits: []conns.ExitCount{}}, "conns": []model.Conn{}})
+		return
+	}
+	addrs, _ := s.eng.Kernel().ListAddrs()
+	ctx := conns.NewContext(addrs, s.eng.Config().ClientRouting.Clients)
+	for i := range all {
+		ctx.Enrich(&all[i])
+	}
+	v := r.URL.Query()
+	limit, _ := strconv.Atoi(v.Get("limit"))
+	sum, rows := conns.Run(all, conns.Query{
+		Text: v.Get("q"), Proto: v.Get("proto"), Kind: v.Get("kind"), State: v.Get("state"),
+		Client: v.Get("client"), Sort: v.Get("sort"), Limit: limit,
+	})
+	if sum.Clients == nil {
+		sum.Clients = []conns.ClientCount{}
+	}
+	if sum.Exits == nil {
+		sum.Exits = []conns.ExitCount{}
+	}
+	writeJSON(w, map[string]any{"info": info, "summary": sum, "conns": orEmpty(rows)})
 }

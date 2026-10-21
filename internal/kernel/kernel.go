@@ -62,6 +62,12 @@ type Kernel interface {
 	IPForward(v6 bool) (bool, error)
 	SetIPForward(v6, on bool) error
 
+	// Conntrack returns the connection tracking table and its limits. When
+	// tracking isn't active, Info.Available is false and Conns is empty.
+	Conntrack() (model.ConntrackInfo, []model.Conn, error)
+	ConntrackAcct() (bool, error)
+	SetConntrackAcct(on bool) error
+
 	// Sockets lists listening TCP and bound UDP sockets with the process
 	// that owns each, like `ss -tulnp`.
 	Sockets() ([]model.Socket, error)

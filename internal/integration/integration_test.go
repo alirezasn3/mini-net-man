@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alirezasn3/mini-net-man/internal/conns"
 	"github.com/alirezasn3/mini-net-man/internal/engine"
 	"github.com/alirezasn3/mini-net-man/internal/importer"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
@@ -729,5 +730,94 @@ func TestSockets(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("port 9002 listed %d times; established connections must not count as listeners", n)
+	}
+}
+
+// ---- connection tracking -------------------------------------------------------
+
+// A client in one namespace reaches a server in another THROUGH this machine,
+// with masquerade and a port forward, and the tracked entries are read back,
+// counted and described.
+func TestConnections(t *testing.T) {
+	v := newEnv(t)
+	sh(t, `
+ip netns add pa; ip netns add pb
+ip link add va0 type veth peer name va1; ip link set va1 netns pa
+ip link add vb0 type veth peer name vb1; ip link set vb1 netns pb
+ip addr add 10.55.0.1/24 dev va0; ip link set va0 up
+ip addr add 10.66.0.1/24 dev vb0; ip link set vb0 up
+ip netns exec pa sh -c 'ip link set lo up; ip addr add 10.55.0.2/24 dev va1; ip link set va1 up; ip route add default via 10.55.0.1'
+ip netns exec pb sh -c 'ip link set lo up; ip addr add 10.66.0.2/24 dev vb1; ip link set vb1 up'
+sleep 1`)
+	t.Cleanup(func() { try("ip netns del pa; ip netns del pb") })
+
+	srv := exec.Command("ip", "netns", "exec", "pb", "nc", "-l", "-k", "9000")
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Process.Kill(); _ = srv.Wait() })
+	time.Sleep(400 * time.Millisecond)
+
+	on := true
+	v.update(t, func(c *model.Config) {
+		c.Sysctl.IPForward, c.Sysctl.ConntrackAcct = &on, &on
+		c.ClientRouting.Clients = []model.ClientRoute{{ID: "x", Name: "pa-client", Src: "10.55.0.2", In: "va0", Out: "vb0"}}
+		c.Firewall.Rules = []model.FWRule{
+			{ID: "m", Chain: "srcnat", Action: "masquerade", OutIface: "vb0"},
+			{ID: "d", Chain: "dstnat", Action: "dnat", Proto: "tcp", DstPort: "9100", ToAddr: "10.66.0.2", ToPort: 9000},
+		}
+	})
+	// Byte counting is set after the firewall has loaded connection tracking.
+	contains(t, "acct", sh(t, "cat /proc/sys/net/netfilter/nf_conntrack_acct"), "1")
+
+	sh(t, `printf 'hello through the router' | ip netns exec pa nc -w1 10.66.0.2 9000 || true`)
+	sh(t, `printf 'via the port forward' | ip netns exec pa nc -w1 10.55.0.1 9100 || true`)
+
+	info, all, err := v.k.Conntrack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Available || !info.Acct || info.Max == 0 || info.Count == 0 {
+		t.Fatalf("conntrack info: %+v", info)
+	}
+	addrs, _ := v.k.ListAddrs()
+	ctx := conns.NewContext(addrs, v.eng.Config().ClientRouting.Clients)
+	for i := range all {
+		ctx.Enrich(&all[i])
+	}
+	find := func(dst string, port int) model.Conn {
+		t.Helper()
+		for _, c := range all {
+			if c.Src == "10.55.0.2" && c.Dst == dst && c.DstPort == port && c.Proto == "tcp" {
+				return c
+			}
+		}
+		t.Fatalf("no tcp 10.55.0.2 -> %s:%d in %d entries", dst, port, len(all))
+		return model.Conn{}
+	}
+
+	fw := find("10.66.0.2", 9000)
+	if fw.Kind != "forwarded" || fw.Client != "pa-client" {
+		t.Errorf("kind=%q client=%q", fw.Kind, fw.Client)
+	}
+	if fw.ReplyDst != "10.66.0.1" || fw.NAT != "SNAT 10.66.0.1" || fw.Via != "vb0" {
+		t.Errorf("masquerade: reply_dst=%s nat=%q via=%q (the translated address belongs to vb0)", fw.ReplyDst, fw.NAT, fw.Via)
+	}
+	if fw.BytesOut < uint64(len("hello through the router")) || fw.BytesIn == 0 && fw.State == "ESTABLISHED" {
+		t.Errorf("byte counters: out=%d in=%d", fw.BytesOut, fw.BytesIn)
+	}
+
+	pf := find("10.55.0.1", 9100)
+	if pf.Kind != "forwarded" {
+		t.Errorf("a port forward to another host is forwarded traffic, got %q", pf.Kind)
+	}
+	if !strings.Contains(pf.NAT, "DNAT 10.66.0.2:9000") || !strings.Contains(pf.NAT, "SNAT 10.66.0.1") {
+		t.Errorf("port forward NAT = %q", pf.NAT)
+	}
+
+	// And the query layer sees exactly these as this client's forwarded traffic.
+	sum, rows := conns.Run(all, conns.Query{Kind: "forwarded", Client: "10.55.0.2"})
+	if len(rows) < 2 || sum.Clients[0].Name != "pa-client" || len(sum.Exits) == 0 || sum.Exits[0].Via != "vb0" {
+		t.Errorf("summary: %+v rows=%d", sum, len(rows))
 	}
 }

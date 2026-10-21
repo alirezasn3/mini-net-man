@@ -419,6 +419,20 @@ func (e *Engine) applyLocked(force bool) int {
 		}
 	}
 
+	// Byte counting is a conntrack setting, which only exists once something
+	// (the firewall above, usually) has loaded connection tracking.
+	if want := e.cfg.Sysctl.ConntrackAcct; want != nil {
+		cur, err := e.k.ConntrackAcct()
+		if err == nil && cur != *want {
+			muts++
+			err = e.k.SetConntrackAcct(*want)
+		}
+		if err != nil {
+			err = fmt.Errorf("connection tracking is not active yet: add a NAT or connection-state firewall rule (%v)", err)
+		}
+		add("sysctl", "conntrack_acct", err)
+	}
+
 	e.issues = issues
 	for _, is := range issues {
 		e.log.Warn("apply issue", "kind", is.Kind, "id", is.ID, "err", is.Message)

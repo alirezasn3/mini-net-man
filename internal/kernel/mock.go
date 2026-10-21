@@ -21,6 +21,7 @@ type Mock struct {
 	rules    []LiveRule
 	fw       *model.Firewall
 	forward  [2]bool // v4, v6
+	acct     bool
 	watchers []chan struct{}
 }
 
@@ -284,6 +285,61 @@ func (m *Mock) SetIPForward(v6, on bool) error {
 	defer m.mu.Unlock()
 	m.forward[fwdIdx(v6)] = on
 	return nil
+}
+
+func (m *Mock) ConntrackAcct() (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.acct, nil
+}
+
+func (m *Mock) SetConntrackAcct(on bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.acct = on
+	return nil
+}
+
+// Conntrack returns a believable table: two VPN clients leaving through
+// different exits (masqueraded), an IPv6 client, a port forward and a few
+// connections to this machine itself.
+func (m *Mock) Conntrack() (model.ConntrackInfo, []model.Conn, error) {
+	m.mu.Lock()
+	acct := m.acct
+	m.mu.Unlock()
+	nat := func(c model.Conn, to string) model.Conn {
+		c.ReplySrc, c.ReplySrcPort, c.ReplyDst, c.ReplyDstPort = c.Dst, c.DstPort, to, c.SrcPort
+		return c
+	}
+	var conns []model.Conn
+	add := func(c model.Conn, out, in uint64) {
+		if acct {
+			c.BytesOut, c.BytesIn = out, in
+		}
+		conns = append(conns, c)
+	}
+	web := []struct {
+		dst string
+		out uint64
+	}{{"142.250.74.78", 48_000}, {"151.101.1.69", 1_200_000}, {"104.16.132.229", 9_500}, {"93.184.216.34", 310_000}, {"35.186.224.25", 22_000}}
+	for i, w := range web {
+		add(nat(model.Conn{Family: "ipv4", Proto: "tcp", State: "ESTABLISHED", Src: "10.0.0.5", SrcPort: 50000 + i, Dst: w.dst, DstPort: 443, Timeout: 431_990 - i*70, Assured: true}, "10.9.0.2"), w.out, w.out*14)
+	}
+	add(nat(model.Conn{Family: "ipv4", Proto: "udp", Src: "10.0.0.5", SrcPort: 41000, Dst: "8.8.8.8", DstPort: 53, Timeout: 25}, "10.9.0.2"), 80, 160)
+	add(nat(model.Conn{Family: "ipv4", Proto: "tcp", State: "TIME_WAIT", Src: "10.0.0.6", SrcPort: 52100, Dst: "172.217.19.14", DstPort: 443, Timeout: 90, Assured: true}, "10.8.0.2"), 3_400, 51_000)
+	add(nat(model.Conn{Family: "ipv4", Proto: "tcp", State: "ESTABLISHED", Src: "10.0.0.6", SrcPort: 52144, Dst: "140.82.112.3", DstPort: 443, Timeout: 431_000, Assured: true}, "10.8.0.2"), 880_000, 4_100_000)
+	add(nat(model.Conn{Family: "ipv4", Proto: "tcp", State: "SYN_SENT", Src: "10.0.0.6", SrcPort: 52190, Dst: "203.0.113.9", DstPort: 8443, Timeout: 118, Unreplied: true}, "10.8.0.2"), 60, 0)
+	add(model.Conn{Family: "ipv6", Proto: "tcp", State: "ESTABLISHED", Src: "fd00:10::5", SrcPort: 43210, Dst: "2606:4700::6810:84e5", DstPort: 443, Timeout: 431_500,
+		ReplySrc: "2606:4700::6810:84e5", ReplySrcPort: 443, ReplyDst: "fd00:8::2", ReplyDstPort: 43210, Assured: true}, 12_000, 190_000)
+	add(model.Conn{Family: "ipv4", Proto: "tcp", State: "ESTABLISHED", Src: "203.0.113.50", SrcPort: 60022, Dst: "192.168.71.10", DstPort: 8443,
+		ReplySrc: "10.0.0.20", ReplySrcPort: 443, ReplyDst: "203.0.113.50", ReplyDstPort: 60022, Timeout: 431_900, Assured: true}, 5_000, 70_000)
+	add(model.Conn{Family: "ipv4", Proto: "tcp", State: "ESTABLISHED", Src: "203.0.113.7", SrcPort: 51822, Dst: "192.168.71.10", DstPort: 22,
+		ReplySrc: "192.168.71.10", ReplySrcPort: 22, ReplyDst: "203.0.113.7", ReplyDstPort: 51822, Timeout: 431_990, Assured: true}, 9_000, 41_000)
+	add(model.Conn{Family: "ipv4", Proto: "tcp", State: "ESTABLISHED", Src: "127.0.0.1", SrcPort: 38000, Dst: "127.0.0.1", DstPort: 8080,
+		ReplySrc: "127.0.0.1", ReplySrcPort: 8080, ReplyDst: "127.0.0.1", ReplyDstPort: 38000, Timeout: 431_000, Assured: true}, 700, 2_300)
+	add(model.Conn{Family: "ipv4", Proto: "icmp", Src: "192.168.71.10", Dst: "192.168.71.1", Timeout: 28,
+		ReplySrc: "192.168.71.1", ReplyDst: "192.168.71.10"}, 84, 84)
+	return model.ConntrackInfo{Available: true, Count: len(conns) + 4_200, Max: 65_536, Acct: acct}, conns, nil
 }
 
 // Sockets returns a believable listener list, including this very process.

@@ -49,6 +49,9 @@ type Sysctl struct {
 	// nil leaves the kernel setting alone.
 	IPForward   *bool `yaml:"ip_forward,omitempty" json:"ip_forward"`
 	IPv6Forward *bool `yaml:"ipv6_forward,omitempty" json:"ipv6_forward"`
+	// ConntrackAcct makes the kernel count bytes and packets per tracked
+	// connection (net.netfilter.nf_conntrack_acct); the Connections page shows them.
+	ConntrackAcct *bool `yaml:"conntrack_acct,omitempty" json:"conntrack_acct"`
 }
 
 // Address is an extra address (IPv4 or IPv6) added to an interface (like `ip addr add`).
@@ -204,4 +207,43 @@ type Socket struct {
 type SocketProc struct {
 	PID  int    `json:"pid"`
 	Name string `json:"name"`
+}
+
+// Conn is one entry of the kernel's connection tracking table. The first
+// address pair is the original direction (who opened the connection), the
+// Reply pair is what the kernel expects to come back, which differs when NAT
+// rewrote something.
+type Conn struct {
+	Family       string `json:"family"` // ipv4 | ipv6
+	Proto        string `json:"proto"`  // tcp, udp, icmp, ...
+	State        string `json:"state,omitempty"`
+	Src          string `json:"src"`
+	SrcPort      int    `json:"src_port,omitempty"`
+	Dst          string `json:"dst"`
+	DstPort      int    `json:"dst_port,omitempty"`
+	ReplySrc     string `json:"reply_src,omitempty"`
+	ReplySrcPort int    `json:"reply_src_port,omitempty"`
+	ReplyDst     string `json:"reply_dst,omitempty"`
+	ReplyDstPort int    `json:"reply_dst_port,omitempty"`
+	Timeout      int    `json:"timeout"` // seconds until the entry expires
+	Unreplied    bool   `json:"unreplied,omitempty"`
+	Assured      bool   `json:"assured,omitempty"`
+	// Byte counters, present only when accounting is on.
+	BytesOut uint64 `json:"bytes_out,omitempty"` // original direction
+	BytesIn  uint64 `json:"bytes_in,omitempty"`  // reply direction
+
+	// Filled in by the server.
+	Kind   string `json:"kind,omitempty"`   // forwarded | incoming | outgoing
+	Client string `json:"client,omitempty"` // name of the matching client-routing client
+	NAT    string `json:"nat,omitempty"`    // "SNAT 10.8.0.2" / "DNAT 10.0.0.9:443"
+	Via    string `json:"via,omitempty"`    // interface that owns the translated source address
+}
+
+// ConntrackInfo describes the state of connection tracking itself.
+type ConntrackInfo struct {
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"` // why it isn't, when it isn't
+	Count     int    `json:"count"`            // entries in the table
+	Max       int    `json:"max"`              // table limit
+	Acct      bool   `json:"acct"`             // byte counters on
 }
