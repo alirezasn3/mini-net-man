@@ -30,7 +30,7 @@
         <h2 class="text-sm font-semibold">Client routing</h2>
         <p class="mt-1 text-sm text-slate-500">
           An optional shortcut: send traffic from chosen clients out through a chosen interface (for example, VPN clients on <span class="mono">wgServer</span> exiting through <span class="mono">wgBridge1</span>).
-          It only creates ordinary routes, policy rules and firewall entries, shown as <span class="badge bg-accent-100 text-accent-800 dark:bg-accent-800/40 dark:text-accent-100">generated</span> on their own pages. Turn it off and they disappear. Nothing else depends on it.
+          It only creates ordinary routes, policy rules and firewall entries, shown as <span class="badge bg-accent-600/20 text-accent-300">generated</span> on their own pages. Turn it off and they disappear. Nothing else depends on it.
         </p>
       </div>
       <label class="flex items-center gap-2 text-sm font-medium">
@@ -38,10 +38,18 @@
         Enabled
       </label>
     </div>
-    <div class="mt-4 flex flex-wrap items-end gap-4">
-      <div><label class="label" for="tb">First routing table</label><input id="tb" type="number" class="input w-32" bind:value={cfg.table_base} /></div>
-      <div><label class="label" for="pb">First rule priority</label><input id="pb" type="number" class="input w-32" bind:value={cfg.priority_base} /></div>
-      <button class="btn btn-sm" onclick={saveSettings}>Save</button>
+    <div class="mt-4 flex flex-wrap items-start gap-4">
+      <div class="max-w-48">
+        <label class="label" for="tb">First routing table</label>
+        <input id="tb" type="number" class="input w-32" bind:value={cfg.table_base} />
+        <p class="hint">Each exit interface gets a table counting up from here. Pick numbers you don’t use elsewhere.</p>
+      </div>
+      <div class="max-w-48">
+        <label class="label" for="pb">First rule priority</label>
+        <input id="pb" type="number" class="input w-32" bind:value={cfg.priority_base} />
+        <p class="hint">Generated rules are numbered from here. Keep it above your own rules.</p>
+      </div>
+      <button class="btn btn-sm mt-6" onclick={saveSettings}>Save</button>
     </div>
     {#if cfg.exits.length}
       <p class="mt-3 text-xs text-slate-500">Tables in use: {cfg.exits.map((e) => `${e.interface} → ${e.table}`).join(', ')}</p>
@@ -61,11 +69,11 @@
       { key: 'kill_switch', label: 'Kill switch', render: (c) => (c.kill_switch ? 'on' : 'off') },
     ]}
     fields={[
-      { key: 'name', label: 'Name', type: 'text', placeholder: 'alice-laptop', wide: true },
-      { key: 'src', label: 'Client IP or network', type: 'text', mono: true, placeholder: '10.0.0.5 or fd00:10::5', help: 'IPv4 or IPv6. A client is routed within its own family.' },
-      { key: 'in', label: 'Client-facing interface', type: 'iface', mono: true, placeholder: 'wgServer' },
-      { key: 'out', label: 'Exit interface', type: 'iface', mono: true, placeholder: 'wgBridge1' },
-      { key: 'kill_switch', label: 'Kill switch: drop traffic if the exit is down', type: 'checkbox', wide: true },
+      { key: 'name', label: 'Name', type: 'text', placeholder: 'alice-laptop', wide: true, help: 'A label so you recognise this client. Optional.' },
+      { key: 'src', label: 'Client IP or network', type: 'text', mono: true, placeholder: '10.0.0.5 or fd00:10::5', help: 'The client\u2019s tunnel address, IPv4 or IPv6. Give a network like 10.0.5.0/24 to route a whole group the same way.' },
+      { key: 'in', label: 'Client-facing interface', type: 'iface', mono: true, placeholder: 'wgServer', help: 'The interface the client connects to. Replies are routed back out of it.' },
+      { key: 'out', label: 'Exit interface', type: 'iface', mono: true, placeholder: 'wgBridge1', help: 'The interface this client\u2019s traffic should leave through, for example a tunnel to another country.' },
+      { key: 'kill_switch', label: 'Kill switch', type: 'checkbox', wide: true, help: 'If the exit goes down, drop this client\u2019s traffic instead of letting it out through the server\u2019s own connection.' },
     ]}
     blank={() => ({ name: '', src: '', in: '', out: '', kill_switch: true, disabled: false })}
   />

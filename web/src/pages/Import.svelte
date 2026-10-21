@@ -63,8 +63,8 @@
             <label class="flex cursor-pointer items-center gap-3 px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800/40">
               <input type="checkbox" class="size-4 accent-accent-600" bind:checked={sel[key][x.id]} />
               <span class="mono flex-1">{text(x)}</span>
-              {#if fam(x)}<span class="badge {fam(x) === 'IPv6' ? 'bg-accent-100 text-accent-800 dark:bg-accent-800/40 dark:text-accent-100' : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400'}">{fam(x)}</span>{/if}
-              <span class="badge bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400">{x.source}</span>
+              {#if fam(x)}<span class="badge {fam(x) === 'IPv6' ? 'bg-accent-600/20 text-accent-300' : 'bg-slate-800 text-slate-400'}">{fam(x)}</span>{/if}
+              <span class="badge bg-slate-800 text-slate-400">{x.source}</span>
             </label>
           </li>
         {/each}

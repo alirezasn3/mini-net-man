@@ -68,10 +68,11 @@
       <div class="col-span-2"><label class="label" for="listen">Listen address</label><input id="listen" class="input mono" bind:value={web.listen} /></div>
       <div><label class="label" for="port">Port</label><input id="port" type="number" class="input" bind:value={web.port} /></div>
     </div>
+    <p class="hint -mt-2">0.0.0.0 listens on every IPv4 address, :: on IPv4 and IPv6, 127.0.0.1 only on this machine. Address and port change after a restart.</p>
     <div>
       <label class="label" for="ips">Allowed client IPs (one per line, IPs or CIDRs)</label>
       <textarea id="ips" rows="4" class="input mono" bind:value={web.allowed_ips} placeholder="203.0.113.7&#10;198.51.100.0/24"></textarea>
-      <p class="mt-1 text-xs text-slate-500">IPv4 or IPv6. Other addresses get no answer at all. An empty list allows only localhost. To serve IPv6, set the listen address to <span class="mono">::</span> (dual-stack).</p>
+      <p class="hint">IPv4 or IPv6. Other addresses get no answer at all. An empty list allows only localhost. To serve IPv6, set the listen address to <span class="mono">::</span> (dual-stack).</p>
     </div>
     <p class="text-xs text-slate-500">{web.tls ? 'TLS is on (set in the config file).' : 'Served over plain HTTP. Set tls_cert and tls_key in the config file, or put it behind something that terminates TLS.'}</p>
     <button class="btn btn-primary">Save</button>
@@ -80,7 +81,7 @@
   <form class="card space-y-4 p-4" onsubmit={changePw}>
     <h2 class="text-sm font-semibold">Password for {app.user}</h2>
     <div><label class="label" for="old">Current password</label><input id="old" type="password" autocomplete="current-password" class="input" bind:value={pw.old} /></div>
-    <div><label class="label" for="new">New password</label><input id="new" type="password" autocomplete="new-password" class="input" bind:value={pw.new} /></div>
+    <div><label class="label" for="new">New password</label><input id="new" type="password" autocomplete="new-password" class="input" bind:value={pw.new} /><p class="hint">At least 8 characters. You will be logged out everywhere afterwards.</p></div>
     <div><label class="label" for="again">Repeat new password</label><input id="again" type="password" autocomplete="new-password" class="input" bind:value={pw.again} /></div>
     <div class="flex gap-2">
       <button class="btn btn-primary">Change password</button>
@@ -100,8 +101,8 @@
         <dt class="text-slate-500">Latest release</dt>
         <dd class="mono">
           {#if up.latest}
-            {#if up.url}<a class="underline decoration-slate-400 underline-offset-2 hover:text-accent-700" href={up.url} target="_blank" rel="noreferrer noopener">{up.latest}</a>{:else}{up.latest}{/if}
-            {#if up.available}<span class="badge ml-2 bg-accent-100 text-accent-800 dark:bg-accent-800/40 dark:text-accent-100">newer</span>{:else if up.can_install}<span class="badge ml-2 bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400">up to date</span>{/if}
+            {#if up.url}<a class="underline decoration-slate-400 underline-offset-2 hover:text-accent-300" href={up.url} target="_blank" rel="noreferrer noopener">{up.latest}</a>{:else}{up.latest}{/if}
+            {#if up.available}<span class="badge ml-2 bg-accent-600/20 text-accent-300">newer</span>{:else if up.can_install}<span class="badge ml-2 bg-slate-800 text-slate-400">up to date</span>{/if}
           {:else}
             <span class="text-slate-400">not checked</span>
           {/if}

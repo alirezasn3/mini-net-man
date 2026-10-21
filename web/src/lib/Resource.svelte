@@ -99,7 +99,7 @@
                 <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{col.label}</span>
                 <span class="min-w-0 break-words max-sm:text-right">
                   {v}
-                  {#if ci === 0 && item.disabled}<span class="badge ml-2 bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400">disabled</span>{/if}
+                  {#if ci === 0 && item.disabled}<span class="badge ml-2 bg-slate-800 text-slate-400">disabled</span>{/if}
                 </span>
               </td>
             {/each}
@@ -127,7 +127,7 @@
                 <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{col.label}</span>
                 <span class="min-w-0 break-words max-sm:text-right">
                   {v}
-                  {#if ci === 0}<span class="badge ml-2 bg-accent-100 text-accent-800 dark:bg-accent-800/40 dark:text-accent-100" title="Created by Client Routing">generated</span>{/if}
+                  {#if ci === 0}<span class="badge ml-2 bg-accent-600/20 text-accent-300" title="Created by Client Routing">generated</span>{/if}
                 </span>
               </td>
             {/each}
@@ -139,16 +139,17 @@
   </div>
 </section>
 
-<dialog bind:this={dialog} class="m-auto max-h-[calc(100dvh-2rem)] w-[min(34rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-slate-200 bg-white p-0 text-slate-800 shadow-xl backdrop:bg-slate-950/50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+<dialog bind:this={dialog} class="m-auto max-h-[calc(100dvh-2rem)] w-[min(34rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-0 text-slate-300 shadow-2xl shadow-black/60 backdrop:bg-black/70">
   {#if draft}
     <form onsubmit={save} class="p-5">
       <h3 class="mb-4 text-base font-semibold">{isNew ? addLabel : 'Edit ' + addLabel.replace(/^Add /, '')}</h3>
       <div class="grid grid-cols-1 gap-x-3 gap-y-3 sm:grid-cols-2">
         {#each fields as f}
           {#if !f.show || f.show(draft)}
+            {@const hint = typeof f.help === 'function' ? f.help(draft) : f.help}
             <div class={f.wide ? 'sm:col-span-2' : ''}>
               {#if f.type === 'checkbox'}
-                <label class="flex items-center gap-2 pt-5 text-sm">
+                <label class="flex items-center gap-2 pt-1 text-sm">
                   <input type="checkbox" bind:checked={draft[f.key]} class="size-4 accent-accent-600" />
                   {f.label}
                 </label>
@@ -164,13 +165,13 @@
                   <input id="f-{f.key}" type="text" class="input {f.mono ? 'mono' : ''}" bind:value={draft[f.key]} placeholder={f.placeholder ?? ''}
                     list={f.type === 'iface' ? 'ifaces' : undefined} autocomplete="off" spellcheck="false" />
                 {/if}
-                {#if f.help}<p class="mt-1 text-xs text-slate-500">{f.help}</p>{/if}
               {/if}
+              {#if hint}<p class="hint">{hint}</p>{/if}
             </div>
           {/if}
         {/each}
       </div>
-      <div class="mt-5 flex justify-end gap-2">
+      <div class="sticky -bottom-5 -mx-5 mt-5 -mb-5 flex justify-end gap-2 border-t border-slate-800 bg-slate-900 px-5 py-3">
         <button type="button" class="btn" onclick={() => dialog.close()}>Cancel</button>
         <button type="submit" class="btn btn-primary">Save</button>
       </div>

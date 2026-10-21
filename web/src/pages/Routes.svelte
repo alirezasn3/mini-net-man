@@ -40,13 +40,13 @@
       { key: 'comment', label: 'Comment' },
     ]}
     fields={[
-      { key: 'dst', label: 'Destination', type: 'text', mono: true, placeholder: 'default, ::/0, 10.0.0.0/16, fd00::/64' },
-      { key: 'table', label: 'Table', type: 'text', placeholder: 'main, or a number like 200', help: 'Empty means main.' },
-      { key: 'dev', label: 'Interface', type: 'iface', mono: true, placeholder: 'wgBridge0' },
-      { key: 'gateway', label: 'Gateway', type: 'text', mono: true, placeholder: 'optional next hop (v4 or v6)' },
-      { key: 'metric', label: 'Metric', type: 'number', help: '0 uses the kernel default.' },
-      { key: 'type', label: 'Type', type: 'select', options: ['unicast', 'blackhole', 'unreachable', 'prohibit'] },
-      { key: 'comment', label: 'Comment', type: 'text', wide: true },
+      { key: 'dst', label: 'Destination', type: 'text', mono: true, placeholder: 'default, ::/0, 10.0.0.0/16, fd00::/64', help: 'The network this route covers, like 10.0.0.0/16. Use default for all IPv4 traffic and ::/0 for all IPv6.' },
+      { key: 'table', label: 'Table', type: 'text', placeholder: 'main, or a number like 200', help: 'Which routing table it goes in. Empty means the normal (main) table; use a number such as 200 for a policy-routing table.' },
+      { key: 'dev', label: 'Interface', type: 'iface', mono: true, placeholder: 'wgBridge0', help: 'Where matching traffic leaves, for example an exit tunnel. Optional if you give a gateway.' },
+      { key: 'gateway', label: 'Gateway', type: 'text', mono: true, placeholder: 'optional next hop (v4 or v6)', help: 'The router that should receive the traffic. Leave empty for tunnels and directly attached networks.' },
+      { key: 'metric', label: 'Metric', type: 'number', help: 'When two routes cover the same destination the lower number wins. 0 uses the kernel default.' },
+      { key: 'type', label: 'Type', type: 'select', options: ['unicast', 'blackhole', 'unreachable', 'prohibit'], help: (d) => ({ unicast: 'Forward normally.', blackhole: 'Silently drop. The sender just waits.', unreachable: 'Drop and tell the sender the host is unreachable.', prohibit: 'Drop and tell the sender it is prohibited.' })[d.type] },
+      { key: 'comment', label: 'Comment', type: 'text', wide: true, help: 'Optional note for yourself.' },
     ]}
     blank={() => ({ dst: 'default', gateway: '', dev: '', table: '', metric: 0, type: 'unicast', comment: '', disabled: false })}
   />
@@ -78,7 +78,7 @@
                 <td class="td mono">{r.dev}</td>
                 <td class="td">{r.table}</td>
                 <td class="td">{r.metric || ''}</td>
-                <td class="td"><span class="badge {r.owned ? 'bg-accent-100 text-accent-800 dark:bg-accent-800/40 dark:text-accent-100' : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400'}">{r.owned ? 'mini-net-man' : r.proto}</span></td>
+                <td class="td"><span class="badge {r.owned ? 'bg-accent-600/20 text-accent-300' : 'bg-slate-800 text-slate-400'}">{r.owned ? 'mini-net-man' : r.proto}</span></td>
               </tr>
             {/each}
           </tbody>

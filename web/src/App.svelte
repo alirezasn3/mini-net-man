@@ -94,9 +94,9 @@
   </main>
 {:else}
   <div class="min-h-screen lg:grid lg:grid-cols-[14rem_1fr]">
-    <aside class="border-b border-slate-200 bg-white lg:sticky lg:top-0 lg:h-screen lg:border-r lg:border-b-0 dark:border-slate-800 dark:bg-slate-900">
+    <aside class="border-b border-slate-800 bg-slate-950 lg:sticky lg:top-0 lg:h-screen lg:border-r lg:border-b-0">
       <div class="flex items-center gap-2 px-4 py-4">
-        <span class="grid size-7 place-items-center rounded-md bg-accent-700 text-white">
+        <span class="grid size-7 place-items-center rounded-md bg-accent-600 text-white">
           <svg viewBox="0 0 32 32" class="size-5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21l6-9 5 7 4-5 7 7" /></svg>
         </span>
         <div class="leading-tight">
@@ -108,7 +108,7 @@
       <nav class="flex gap-1 overflow-x-auto px-2 pb-2 lg:flex-col lg:overflow-visible" aria-label="Main">
         {#each pages as p}
           <a href="#/{p.path}" aria-current={page.path === p.path ? 'page' : undefined}
-            class="shrink-0 rounded-md px-3 py-1.5 text-sm font-medium whitespace-nowrap text-slate-600 hover:bg-slate-100 aria-[current=page]:bg-accent-50 aria-[current=page]:text-accent-800 dark:text-slate-300 dark:hover:bg-slate-800 dark:aria-[current=page]:bg-accent-800/30 dark:aria-[current=page]:text-accent-100">
+            class="shrink-0 rounded-md px-3 py-1.5 text-sm whitespace-nowrap text-slate-400 hover:bg-slate-900 hover:text-slate-200 aria-[current=page]:bg-accent-600/15 aria-[current=page]:text-accent-300">
             {p.label}
           </a>
         {/each}
@@ -116,11 +116,11 @@
     </aside>
 
     <div class="min-w-0">
-      <header class="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/90 px-5 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/90">
+      <header class="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 bg-slate-950/90 px-5 py-3 backdrop-blur">
         <div class="flex items-center gap-3">
           <h1 class="text-base font-semibold">{page.label}</h1>
           {#if app.update?.available}
-            <a href="#/settings" class="badge bg-accent-100 text-accent-800 hover:bg-accent-500/30 dark:bg-accent-800/40 dark:text-accent-100">Update {app.update.latest} available</a>
+            <a href="#/settings" class="badge bg-accent-600/20 text-accent-300 hover:bg-accent-600/30">Update {app.update.latest} available</a>
           {/if}
         </div>
         {#if app.safe.active}
@@ -147,6 +147,6 @@
 
 <div class="pointer-events-none fixed right-4 bottom-4 z-50 flex flex-col gap-2" aria-live="polite">
   {#each app.toasts as t (t.id)}
-    <div class="pointer-events-auto max-w-sm rounded-md px-3 py-2 text-sm shadow-lg {t.kind === 'error' ? 'bg-red-700 text-white' : 'bg-slate-800 text-white dark:bg-slate-100 dark:text-slate-900'}">{t.message}</div>
+    <div class="pointer-events-auto max-w-sm rounded-md px-3 py-2 text-sm shadow-lg {t.kind === 'error' ? 'bg-red-900 text-red-50' : 'border border-slate-700 bg-slate-800 text-slate-100'}">{t.message}</div>
   {/each}
 </div>

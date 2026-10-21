@@ -68,7 +68,7 @@
                 <td class="td mono font-medium">{l.name}</td>
                 <td class="td text-slate-500 max-sm:hidden">{l.type}</td>
                 <td class="td">
-                  <span class="badge {l.up ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400'}">{l.up ? 'up' : 'down'}</span>
+                  <span class="badge {l.up ? 'bg-accent-600/20 text-accent-300' : 'bg-slate-800 text-slate-400'}">{l.up ? 'up' : 'down'}</span>
                 </td>
                 <td class="td mono break-words">{(l.addrs ?? []).join(', ')}</td>
                 <td class="td tabular-nums text-slate-500 max-sm:hidden">{l.mtu}</td>
@@ -89,7 +89,7 @@
           {#each [['IPv4', false, o.forwarding.ipv4], ['IPv6', true, o.forwarding.ipv6]] as [label, v6, f]}
             <li class="flex flex-wrap items-center gap-3">
               <span class="w-10 text-sm font-medium">{label}</span>
-              <span class="badge {f.on ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'}">{f.on ? 'enabled' : 'disabled'}</span>
+              <span class="badge {f.on ? 'bg-accent-600/20 text-accent-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'}">{f.on ? 'enabled' : 'disabled'}</span>
               <button class="btn btn-sm" onclick={() => setForward(v6, !f.on)}>{f.on ? 'Disable' : 'Enable'} and keep it that way</button>
               <span class="text-xs text-slate-500">{f.managed ? 'set at startup' : 'not managed'}</span>
             </li>
@@ -103,7 +103,7 @@
         <ul class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
           {#each o.detect.tools as t}
             <li class="flex items-center gap-2">
-              <span class="size-2 rounded-full {t.installed ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'}"></span>
+              <span class="size-2 rounded-full {t.installed ? 'bg-accent-500' : 'bg-slate-300 dark:bg-slate-700'}"></span>
               <span class="mono">{t.name}</span>
             </li>
           {/each}
