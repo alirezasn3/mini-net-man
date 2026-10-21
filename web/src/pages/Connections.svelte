@@ -160,7 +160,11 @@
         {#if acct}<span class="mono">↑ {bytes(sum.bytes_out)} · ↓ {bytes(sum.bytes_in)}</span>{/if}
       </div>
 
-      <LiveTable rows={data.conns} {columns} empty="No connections match." />
+      <LiveTable
+        rows={data.conns}
+        {columns}
+        empty={sum.total === 0 ? 'Nothing is being tracked yet. Only traffic that a NAT or connection-state firewall rule applies to is tracked.' : 'No connections match.'}
+      />
     </section>
   {/if}
 </div>
