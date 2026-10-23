@@ -7,6 +7,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os/exec"
@@ -820,4 +821,74 @@ sleep 1`)
 	if len(rows) < 2 || sum.Clients[0].Name != "pa-client" || len(sum.Exits) == 0 || sum.Exits[0].Via != "vb0" {
 		t.Errorf("summary: %+v rows=%d", sum, len(rows))
 	}
+}
+
+// ---- boot order --------------------------------------------------------------
+
+// At boot the daemon can start before the WireGuard interfaces exist, while
+// other interfaces keep appearing. Everything must still converge once the
+// awaited interfaces show up, without a restart.
+func TestInterfacesAppearLate(t *testing.T) {
+	v := newEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go v.eng.Run(ctx)
+	time.Sleep(300 * time.Millisecond)
+
+	// The config refers to interfaces that do not exist yet. Failing to apply
+	// them now is expected; the issues are reported, not fatal.
+	if _, err := v.eng.Update(func(c *model.Config) error {
+		c.Routes = []model.Route{
+			{ID: "r1", Dst: "default", Dev: "wgLate0", Table: "200"},
+			{ID: "r2", Dst: "10.99.0.0/16", Dev: "wgLate1", Table: "200"},
+		}
+		c.Rules = []model.Rule{{ID: "u1", Priority: 200, Src: "10.99.0.0/16", Action: "lookup", Table: "200"}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	contains(t, "rule is added even though the routes can't be yet", sh(t, "ip rule show"), "from 10.99.0.0/16 lookup 200")
+
+	// A noisy boot: unrelated interfaces and addresses keep appearing, each
+	// producing kernel events, over several seconds.
+	for i := 0; i < 14; i++ {
+		sh(t, fmt.Sprintf("ip link add noise%d type dummy; ip link set noise%d up; ip addr add 172.31.%d.1/24 dev noise%d", i, i, i, i))
+		time.Sleep(450 * time.Millisecond)
+	}
+
+	// Now the awaited interfaces appear.
+	sh(t, "ip link add wgLate0 type dummy; ip link set wgLate0 up; ip link add wgLate1 type dummy; ip link set wgLate1 up")
+	waitFor(t, 15*time.Second, "routes through the late interfaces", func() bool {
+		out, _ := try("ip route show table 200") // errors while the table is still empty
+		return strings.Contains(out, "default dev wgLate0") && strings.Contains(out, "10.99.0.0/16 dev wgLate1")
+	})
+}
+
+// Even with no kernel event at all after the interfaces appear (events can be
+// missed in the gap before the watcher starts), failed items are retried.
+func TestFailedItemsAreRetried(t *testing.T) {
+	v := newEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go v.eng.Run(ctx)
+	time.Sleep(300 * time.Millisecond)
+	if _, err := v.eng.Update(func(c *model.Config) error {
+		c.Routes = []model.Route{{ID: "r1", Dst: "default", Dev: "wgLate0", Table: "200"}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.eng.Issues()) == 0 {
+		t.Fatal("expected an issue for the missing interface")
+	}
+	// Create the interface from another network namespace's point of view is
+	// not possible, so make the failure persist past the event: bring the link
+	// up, then stop the engine from hearing about it by waiting out its
+	// debounce, and rely on the retry timer for the rest.
+	sh(t, "ip link add wgLate0 type dummy; ip link set wgLate0 up")
+	waitFor(t, 15*time.Second, "route to appear", func() bool {
+		out, _ := try("ip route show table 200")
+		return strings.Contains(out, "default dev wgLate0")
+	})
+	waitFor(t, 5*time.Second, "issue to clear", func() bool { return len(v.eng.Issues()) == 0 })
 }

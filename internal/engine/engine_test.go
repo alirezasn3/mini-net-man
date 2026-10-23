@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -303,4 +304,75 @@ func TestClientRoutingIPv6(t *testing.T) {
 	if n := reconcileChanges(e); n != 0 {
 		t.Errorf("not idempotent: %d", n)
 	}
+}
+
+// fast shortens the loop timing for a test and restores it afterwards.
+func fast(t *testing.T) {
+	t.Helper()
+	d, r, m, tk, w, p := debounceDelay, retryMin, retryMax, tickEvery, stormWindow, stormPause
+	debounceDelay, retryMin, retryMax, tickEvery, stormWindow, stormPause =
+		10*time.Millisecond, 30*time.Millisecond, 200*time.Millisecond, 10*time.Millisecond, time.Second, time.Second
+	t.Cleanup(func() { debounceDelay, retryMin, retryMax, tickEvery, stormWindow, stormPause = d, r, m, tk, w, p })
+}
+
+func routeApplied(k *kernel.Mock, dev string) bool {
+	routes, _ := k.ListRoutes()
+	for _, r := range routes {
+		if r.Owned && r.Dev == dev {
+			return true
+		}
+	}
+	return false
+}
+
+func eventually(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if ok() {
+			return
+		}
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// The daemon can start before an interface it was told about exists. If the
+// kernel event for it is missed, the failed route must still be retried.
+func TestFailedRoutesAreRetriedWithoutEvents(t *testing.T) {
+	fast(t)
+	e, k := newTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	is := mustUpdate(t, e, func(c *model.Config) error {
+		c.Routes = []model.Route{{ID: "r", Dst: "default", Dev: "wgLate0", Table: "200"}}
+		return nil
+	})
+	if len(is) != 1 {
+		t.Fatalf("want one issue for the missing interface, got %+v", is)
+	}
+	k.AddLink("wgLate0", false) // appears; nobody is told
+	eventually(t, "the retry to apply the route", func() bool { return routeApplied(k, "wgLate0") })
+	eventually(t, "the issue to clear", func() bool { return len(e.Issues()) == 0 })
+}
+
+// During boot unrelated interfaces and addresses keep generating events while
+// a route still can't be applied. That must not look like a runaway loop and
+// freeze reconciling: the awaited interface appearing later still has to work.
+func TestEventBurstWithFailingRouteDoesNotStopReconciling(t *testing.T) {
+	fast(t)
+	e, k := newTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+	mustUpdate(t, e, func(c *model.Config) error {
+		c.Routes = []model.Route{{ID: "r", Dst: "default", Dev: "wgLate0", Table: "200"}}
+		return nil
+	})
+	for i := 0; i < 30; i++ { // well past the old limit of 6 per window
+		k.Poke()
+		time.Sleep(25 * time.Millisecond)
+	}
+	k.AddLink("wgLate0", true)
+	eventually(t, "the route after the burst", func() bool { return routeApplied(k, "wgLate0") })
 }

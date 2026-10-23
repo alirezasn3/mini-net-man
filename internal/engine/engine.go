@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,12 +22,14 @@ type Engine struct {
 	log  *slog.Logger
 	path string // config.yaml; sidecar files live next to it
 
-	mu       sync.Mutex
-	cfg      model.Config
-	issues   []model.Issue
-	lastNFT  string
-	lastAddr []kernel.Addr
-	safe     *safeSession
+	mu      sync.Mutex
+	cfg     model.Config
+	issues  []model.Issue
+	lastNFT string
+
+	lastIssueKey string
+	lastAddr     []kernel.Addr
+	safe         *safeSession
 }
 
 type safeSession struct {
@@ -92,25 +95,40 @@ func (e *Engine) Start() {
 	e.applyLocked(true)
 }
 
-// Run watches the kernel and expires safe-mode sessions until ctx ends.
+// Timing of the reconcile loop; tests shorten them.
+var (
+	debounceDelay = 500 * time.Millisecond // a burst of kernel events becomes one reconcile
+	retryMin      = time.Second            // first retry of items that failed to apply
+	retryMax      = 30 * time.Second       // retries back off up to this
+	tickEvery     = time.Second            // safe-mode expiry and retry checks
+	stormWindow   = 10 * time.Second
+	stormPause    = 30 * time.Second
+)
+
+// Run watches the kernel, retries items that failed to apply, and expires
+// safe-mode sessions, until ctx ends.
+//
+// Failures are common at boot: the daemon can start before the interfaces
+// it was told about (a WireGuard tunnel, say) exist. Kernel events normally
+// bring them in, but events can be missed, so anything still failing is also
+// retried on a timer with backoff.
 func (e *Engine) Run(ctx context.Context) {
 	events, err := e.k.Watch(ctx)
 	if err != nil {
-		e.log.Error("kernel watch failed; link changes won't be re-applied", "err", err)
+		e.log.Error("kernel watch failed; relying on timed retries only", "err", err)
 	}
-	tick := time.NewTicker(time.Second)
+	tick := time.NewTicker(tickEvery)
 	defer tick.Stop()
 	var debounce <-chan time.Time
-	var recent []time.Time // event-driven reconciles that changed something
-	var quietUntil time.Time
+	var recent []time.Time // event-driven reconciles that really changed something
+	wait, nextRetry := retryMin, time.Time{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-events:
-			// A burst of netlink events becomes one reconcile.
-			if debounce == nil && time.Now().After(quietUntil) {
-				debounce = time.After(500 * time.Millisecond)
+			if debounce == nil {
+				debounce = time.After(debounceDelay)
 			}
 		case <-debounce:
 			debounce = nil
@@ -123,18 +141,38 @@ func (e *Engine) Run(ctx context.Context) {
 			}
 			// Our own changes produce kernel events, which is fine once. If
 			// every pass keeps changing something, something isn't converging:
-			// stop reacting for a while rather than spin.
+			// back off, but still catch up with one reconcile at the end
+			// rather than dropping what happened meanwhile.
 			now := time.Now()
 			recent = append(recent, now)
-			for len(recent) > 0 && now.Sub(recent[0]) > 10*time.Second {
+			for len(recent) > 0 && now.Sub(recent[0]) > stormWindow {
 				recent = recent[1:]
 			}
 			if len(recent) >= 6 {
-				e.log.Error("reconcile keeps changing the kernel; pausing event-driven reconciles for 30s")
-				quietUntil, recent = now.Add(30*time.Second), nil
+				e.log.Error("reconcile keeps changing the kernel; pausing event-driven reconciles", "for", stormPause)
+				debounce, recent = time.After(stormPause), nil
 			}
 		case <-tick.C:
 			e.expireSafe()
+
+			e.mu.Lock()
+			failing := len(e.issues) > 0
+			e.mu.Unlock()
+			now := time.Now()
+			switch {
+			case !failing:
+				wait, nextRetry = retryMin, time.Time{}
+			case nextRetry.IsZero():
+				nextRetry = now.Add(wait)
+			case now.After(nextRetry):
+				e.mu.Lock()
+				e.applyLocked(false)
+				e.mu.Unlock()
+				if wait *= 2; wait > retryMax {
+					wait = retryMax
+				}
+				nextRetry = now.Add(wait)
+			}
 		}
 	}
 }
@@ -301,6 +339,16 @@ func (e *Engine) applyLocked(force bool) int {
 			issues = append(issues, model.Issue{Kind: kind, ID: id, Message: err.Error()})
 		}
 	}
+	// do records the outcome of a change: a failure becomes an issue, a
+	// success counts as a change. Only successes count, so a route that keeps
+	// failing (its interface isn't up yet) never looks like a runaway loop.
+	do := func(kind, id string, err error) {
+		if err != nil {
+			add(kind, id, err)
+			return
+		}
+		muts++
+	}
 	d := e.desiredLocked()
 
 	for _, f := range []struct {
@@ -313,8 +361,8 @@ func (e *Engine) applyLocked(force bool) int {
 		}
 		cur, err := e.k.IPForward(f.v6)
 		if err == nil && cur != *f.want {
-			muts++
-			err = e.k.SetIPForward(f.v6, *f.want)
+			do("sysctl", f.id, e.k.SetIPForward(f.v6, *f.want))
+			continue
 		}
 		add("sysctl", f.id, err)
 	}
@@ -334,14 +382,12 @@ func (e *Engine) applyLocked(force bool) int {
 		want[addrKey(ka)] = true
 		applied = append(applied, ka)
 		if !have[addrKey(ka)] {
-			muts++
-			add("address", a.ID, e.k.AddAddr(ka.Interface, ka.Address))
+			do("address", a.ID, e.k.AddAddr(ka.Interface, ka.Address))
 		}
 	}
 	for _, p := range e.lastAddr {
 		if !want[addrKey(p)] && have[addrKey(p)] {
-			muts++
-			add("address", "", e.k.DelAddr(p.Interface, p.Address))
+			do("address", "", e.k.DelAddr(p.Interface, p.Address))
 		}
 	}
 	e.lastAddr = applied
@@ -360,8 +406,7 @@ func (e *Engine) applyLocked(force bool) int {
 			continue
 		}
 		if _, ok := desiredRoutes[r.Key()]; !ok {
-			muts++
-			add("route", "", e.k.DelRoute(r.Route))
+			do("route", "", e.k.DelRoute(r.Route))
 		} else {
 			ownedSig[r.Key()] = r.Sig()
 		}
@@ -370,8 +415,7 @@ func (e *Engine) applyLocked(force bool) int {
 		if ownedSig[key] == r.Sig() {
 			continue
 		}
-		muts++
-		add("route", r.ID, e.k.ReplaceRoute(r))
+		do("route", r.ID, e.k.ReplaceRoute(r))
 	}
 
 	// Rules.
@@ -387,8 +431,7 @@ func (e *Engine) applyLocked(force bool) int {
 		switch {
 		case r.Owned:
 			if _, ok := desiredRules[r.Key()]; !ok {
-				muts++
-				add("rule", "", e.k.DelRule(r.Rule))
+				do("rule", "", e.k.DelRule(r.Rule))
 			} else {
 				ownedRule[r.Key()] = true
 			}
@@ -400,21 +443,20 @@ func (e *Engine) applyLocked(force bool) int {
 		if ownedRule[key] {
 			continue
 		}
-		muts++
 		if foreignRule[key] {
 			// Same rule made by hand: take it over.
 			_ = e.k.DelRule(r)
 		}
-		add("rule", r.ID, e.k.AddRule(r))
+		do("rule", r.ID, e.k.AddRule(r))
 	}
 
 	// Firewall: replaced atomically as one table.
 	text := kernel.RenderNFT(d.Firewall)
 	if force || text != e.lastNFT {
-		muts++
 		if err := e.k.ApplyFirewall(d.Firewall); err != nil {
 			add("firewall", "", err)
 		} else {
+			muts++
 			e.lastNFT = text
 		}
 	}
@@ -424,8 +466,10 @@ func (e *Engine) applyLocked(force bool) int {
 	if want := e.cfg.Sysctl.ConntrackAcct; want != nil {
 		cur, err := e.k.ConntrackAcct()
 		if err == nil && cur != *want {
-			muts++
 			err = e.k.SetConntrackAcct(*want)
+			if err == nil {
+				muts++
+			}
 		}
 		if err != nil {
 			err = fmt.Errorf("connection tracking is not active yet: add a NAT or connection-state firewall rule (%v)", err)
@@ -434,8 +478,19 @@ func (e *Engine) applyLocked(force bool) int {
 	}
 
 	e.issues = issues
+	// Retries repeat the same failures; say each set of them once.
+	var key strings.Builder
 	for _, is := range issues {
-		e.log.Warn("apply issue", "kind", is.Kind, "id", is.ID, "err", is.Message)
+		key.WriteString(is.Kind + "|" + is.ID + "|" + is.Message + "\n")
+	}
+	if key.String() != e.lastIssueKey {
+		e.lastIssueKey = key.String()
+		for _, is := range issues {
+			e.log.Warn("apply issue (will retry)", "kind", is.Kind, "id", is.ID, "err", is.Message)
+		}
+		if len(issues) == 0 {
+			e.log.Info("all configured items applied")
+		}
 	}
 	return muts
 }

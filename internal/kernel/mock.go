@@ -65,6 +65,25 @@ func (m *Mock) notify() {
 	}
 }
 
+// AddLink creates an interface, as `ip link add` plus `set up` would. With
+// notify false no event is sent, which models an event the daemon missed.
+func (m *Mock) AddLink(name string, notify bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.links = append(m.links, model.Link{Name: name, Index: len(m.links) + 1, Type: "wireguard", Up: true, Running: true, MTU: 1420})
+	if notify {
+		m.notify()
+	}
+}
+
+// Poke sends a kernel event without changing anything, like unrelated
+// interfaces and addresses coming and going during boot.
+func (m *Mock) Poke() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.notify()
+}
+
 // SetLinkUp flips an interface up or down, like `ip link set`. Routes through
 // a downed interface disappear, as they do in Linux.
 func (m *Mock) SetLinkUp(name string, up bool) error {
