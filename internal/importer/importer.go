@@ -26,6 +26,20 @@ type Proposal struct {
 	// Policy is set when a source runs a default-drop policy.
 	Policy *model.FirewallPolicy `json:"policy,omitempty"`
 	Notes  []string              `json:"notes"`
+	// Skipped lists what was found but cannot be imported, each with the
+	// reason, so nothing is silently left behind.
+	Skipped []Skipped `json:"skipped"`
+}
+
+// Skipped is one rule that has no equivalent in mini-net-man.
+type Skipped struct {
+	Source string `json:"source"` // where it was found: ufw, iptables (live), ...
+	Text   string `json:"text"`   // the rule as it was written there
+	Reason string `json:"reason"`
+}
+
+func (p *Proposal) skip(source, text, reason string) {
+	p.Skipped = append(p.Skipped, Skipped{Source: source, Text: text, Reason: reason})
 }
 
 const (
@@ -110,7 +124,7 @@ var (
 // jumps into user chains such as ufw-*) is reported in Notes, not guessed at.
 func ParseIptablesSave(text, source, family string, p *Proposal) {
 	table := ""
-	skipped := 0
+	ufwInternal := 0
 	sc := bufio.NewScanner(strings.NewReader(text))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -123,48 +137,91 @@ func ParseIptablesSave(text, source, family string, p *Proposal) {
 				p.Notes = append(p.Notes, fmt.Sprintf("%s: default policy of %s is DROP; not imported automatically", source, m[1]))
 			}
 		case strings.HasPrefix(line, "-A "):
-			chains, ok := chainMap[table]
-			if !ok {
-				skipped++
+			f := tokens(line)
+			if len(f) > 1 && (strings.HasPrefix(f[1], "ufw-") || strings.HasPrefix(f[1], "ufw6-")) {
+				ufwInternal++ // ufw's own plumbing; its rules come from user.rules
 				continue
 			}
-			r, ok := parseIptRule(line, chains)
+			chains, ok := chainMap[table]
 			if !ok {
-				skipped++
+				p.skip(source, line, fmt.Sprintf("the %s table isn't imported (only filter and nat)", table))
+				continue
+			}
+			r, reason := parseIptRule(f, chains, table)
+			if reason != "" {
+				p.skip(source, line, reason)
 				continue
 			}
 			// iptables rules only ever saw one family; keep them that way.
 			r.ID, r.Source, r.Family = engine.NewID(), source, family
-			if r.Validate() != nil {
-				skipped++
+			if err := r.Validate(); err != nil {
+				p.skip(source, line, "not valid once converted: "+err.Error())
 				continue
 			}
 			p.Firewall = append(p.Firewall, r)
 		}
 	}
-	if skipped > 0 {
-		p.Notes = append(p.Notes, fmt.Sprintf("%s: %d rule(s) use options that can't be imported (user chains, modules, ...) and were skipped", source, skipped))
+	if ufwInternal > 0 {
+		p.Notes = append(p.Notes, fmt.Sprintf("%s: %d rule(s) in ufw's own chains were not listed; ufw's rules are imported from its rule files instead", source, ufwInternal))
 	}
 }
 
-func parseIptRule(line string, chains map[string]string) (model.FWRule, bool) {
-	f := strings.Fields(line)
+// tokens splits a rule into words, keeping "quoted text" together (iptables
+// writes comments that way) and dropping the quotes.
+func tokens(line string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote, have := false, false
+	for _, r := range line {
+		switch {
+		case r == '"':
+			inQuote, have = !inQuote, true
+		case (r == ' ' || r == '\t') && !inQuote:
+			if have {
+				out = append(out, cur.String())
+				cur.Reset()
+				have = false
+			}
+		default:
+			cur.WriteRune(r)
+			have = true
+		}
+	}
+	if have {
+		out = append(out, cur.String())
+	}
+	return out
+}
+
+// Modules whose options parseIptRule understands.
+var knownModules = map[string]bool{"tcp": true, "udp": true, "state": true, "conntrack": true, "comment": true, "multiport": true, "icmp": true, "icmp6": true}
+
+// parseIptRule converts one iptables rule. When it can't, the returned reason
+// says why in plain words.
+func parseIptRule(f []string, chains map[string]string, table string) (model.FWRule, string) {
 	var r model.FWRule
+	if len(f) < 2 {
+		return r, "not a rule"
+	}
 	chain, ok := chains[f[1]]
 	if !ok {
-		return r, false
+		if _, builtin := map[string]bool{"INPUT": true, "FORWARD": true, "OUTPUT": true, "PREROUTING": true, "POSTROUTING": true}[f[1]]; builtin {
+			return r, fmt.Sprintf("the %s chain of the %s table isn't imported", f[1], table)
+		}
+		return r, fmt.Sprintf("it is in the user-defined chain %s", f[1])
 	}
 	r.Chain = chain
-	neg := false
+	neg, module := false, ""
 	for i := 2; i < len(f); i++ {
+		opt := f[i]
 		arg := func() string {
 			if i+1 < len(f) {
 				i++
-				return strings.Trim(f[i], `"`)
+				return f[i]
 			}
 			return ""
 		}
-		switch f[i] {
+		switch opt {
 		case "!":
 			neg = true
 			continue
@@ -179,23 +236,28 @@ func parseIptRule(line string, chains map[string]string) (model.FWRule, bool) {
 		case "-p":
 			r.Proto = arg()
 		case "-m":
-			arg() // module name; its options are matched below
-		case "--dport", "--destination-port":
+			module = arg()
+			if !knownModules[module] {
+				return r, fmt.Sprintf("it uses the %q match module, which has no equivalent", module)
+			}
+		case "--dport", "--destination-port", "--dports":
 			r.DstPort = strings.ReplaceAll(arg(), ":", "-")
-		case "--sport", "--source-port":
+		case "--sport", "--source-port", "--sports":
 			r.SrcPort = strings.ReplaceAll(arg(), ":", "-")
 		case "--state", "--ctstate":
 			r.ConnState = strings.ToLower(arg())
 		case "--comment":
 			r.Comment = arg()
-		case "-j":
+		case "-j", "-g":
 			switch t := arg(); t {
-			case "ACCEPT", "DROP", "REJECT", "RETURN", "MASQUERADE":
+			case "ACCEPT", "DROP", "REJECT", "RETURN", "MASQUERADE", "DNAT", "SNAT":
 				r.Action = strings.ToLower(t)
-			case "DNAT", "SNAT":
-				r.Action = strings.ToLower(t)
+			case "LOG", "ULOG", "NFLOG":
+				return r, "logging (-j " + t + ") has no equivalent"
+			case "REDIRECT", "TPROXY", "TCPMSS", "MARK", "CONNMARK", "TOS", "DSCP", "CT", "NOTRACK", "SET", "NFQUEUE":
+				return r, "the " + t + " target has no equivalent"
 			default:
-				return r, false // jump into a user chain or an unknown target
+				return r, "it jumps to another chain (" + t + ")"
 			}
 		case "--to-destination", "--to-source":
 			addr, port, _ := strings.Cut(arg(), ":")
@@ -204,14 +266,20 @@ func parseIptRule(line string, chains map[string]string) (model.FWRule, bool) {
 		case "--to-ports":
 			arg()
 		default:
-			return r, false
+			if module != "" && !knownModules[module] {
+				return r, fmt.Sprintf("it uses the %q module", module)
+			}
+			if strings.HasPrefix(opt, "-") {
+				return r, fmt.Sprintf("the %s option has no equivalent", opt)
+			}
+			return r, fmt.Sprintf("unexpected %q", opt)
 		}
 		if neg {
-			return r, false // negated matches have no equivalent here
+			return r, "it negates a match (!), which has no equivalent"
 		}
 	}
 	if r.Action == "" {
-		return r, false
+		return r, "it has no target (-j), so it only counts packets"
 	}
 	switch r.Proto {
 	case "all":
@@ -219,7 +287,10 @@ func parseIptRule(line string, chains map[string]string) (model.FWRule, bool) {
 	case "ipv6-icmp", "icmp6":
 		r.Proto = "icmpv6"
 	}
-	return r, r.Validate() == nil
+	if err := r.Validate(); err != nil {
+		return r, "not valid once converted: " + err.Error()
+	}
+	return r, ""
 }
 
 func zeroToEmpty(s string) string {
@@ -239,6 +310,10 @@ func zeroToEmpty(s string) string {
 //	### tuple ### route:allow any any 0.0.0.0/0 any 0.0.0.0/0 in_wgServer!out_wgBridge0
 func ParseUFW(text, defaults, family string, p *Proposal) {
 	skipped := 0
+	skip := func(text, reason string) {
+		skipped++
+		p.skip("ufw", text, reason)
+	}
 	var out []model.FWRule
 	sc := bufio.NewScanner(strings.NewReader(text))
 	for sc.Scan() {
@@ -246,10 +321,11 @@ func ParseUFW(text, defaults, family string, p *Proposal) {
 		if !strings.HasPrefix(line, "### tuple ### ") {
 			continue
 		}
+		orig := line
 		line, comment, _ := strings.Cut(strings.TrimPrefix(line, "### tuple ### "), " ## ")
 		f := strings.Fields(line)
 		if len(f) < 7 {
-			skipped++
+			skip(orig, "unrecognised ufw rule format")
 			continue
 		}
 		act, proto, dport, dst, sport, src, dir := f[0], f[1], f[2], f[3], f[4], f[5], f[6]
@@ -267,8 +343,12 @@ func ParseUFW(text, defaults, family string, p *Proposal) {
 			r.Action = "drop"
 		case "reject":
 			r.Action = "reject"
-		default: // limit, logging variants
-			skipped++
+		default:
+			if act == "limit" {
+				skip(orig, "ufw's rate limiting (limit) has no equivalent; add a plain accept rule instead")
+			} else {
+				skip(orig, fmt.Sprintf("the ufw action %q has no equivalent", act))
+			}
 			continue
 		}
 		in, outIf, hasIn, hasOut := splitDir(dir)
@@ -289,8 +369,8 @@ func ParseUFW(text, defaults, family string, p *Proposal) {
 				continue
 			}
 		}
-		if r.Validate() != nil {
-			skipped++
+		if err := r.Validate(); err != nil {
+			skip(orig, "not valid once converted: "+err.Error())
 			continue
 		}
 		out = append(out, r)
@@ -318,9 +398,6 @@ func ParseUFW(text, defaults, family string, p *Proposal) {
 		p.Notes = append(p.Notes, "ufw uses a default-drop policy; the proposal includes ufw's implicit loopback/established rules and the same policy.")
 	}
 	p.Firewall = append(p.Firewall, out...)
-	if skipped > 0 {
-		p.Notes = append(p.Notes, fmt.Sprintf("ufw: %d rule(s) (limit, IPv6 or unsupported forms) were skipped", skipped))
-	}
 }
 
 func portSpec(s string) string {
@@ -353,8 +430,11 @@ func ufwPolicies(defaults string) model.FirewallPolicy {
 	p := model.FirewallPolicy{Input: "accept", Forward: "accept", Output: "accept"}
 	for _, m := range ufwPolRe.FindAllStringSubmatch(defaults, -1) {
 		v := "accept"
-		if m[2] == "DROP" || m[2] == "REJECT" {
+		switch m[2] {
+		case "DROP":
 			v = "drop"
+		case "REJECT":
+			v = "reject"
 		}
 		switch m[1] {
 		case "INPUT":

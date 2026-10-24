@@ -379,7 +379,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	for _, p := range []string{c.Firewall.Policy.Input, c.Firewall.Policy.Forward, c.Firewall.Policy.Output} {
-		if p != "" && p != "accept" && p != "drop" {
+		if p != "" && p != "accept" && p != "drop" && p != "reject" {
 			return fmt.Errorf("invalid chain policy %q", p)
 		}
 	}

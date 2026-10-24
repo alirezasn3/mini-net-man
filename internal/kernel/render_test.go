@@ -37,3 +37,24 @@ func TestRenderNFT(t *testing.T) {
 		t.Error("disabled rule was rendered")
 	}
 }
+
+func TestRenderRejectPolicy(t *testing.T) {
+	out := RenderNFT(model.Firewall{
+		Policy: model.FirewallPolicy{Input: "reject", Forward: "drop", Output: "accept"},
+		Rules:  []model.FWRule{{Chain: "input", Action: "accept", Proto: "tcp", DstPort: "22"}},
+	})
+	// nftables has no reject policy: the chain accepts by policy and ends in a reject rule.
+	inInput := out[strings.Index(out, "chain input"):strings.Index(out, "chain forward")]
+	if !strings.Contains(inInput, "policy accept;") || !strings.HasSuffix(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(inInput), "}")), `reject comment "default policy"`) {
+		t.Errorf("input chain:\n%s", inInput)
+	}
+	if strings.Index(inInput, "tcp dport 22 accept") > strings.Index(inInput, "reject comment") {
+		t.Errorf("the catch-all must come after the rules:\n%s", inInput)
+	}
+	if !strings.Contains(out, "type filter hook forward priority 0; policy drop;") {
+		t.Errorf("drop policies stay real policies:\n%s", out)
+	}
+	if strings.Count(out, `comment "default policy"`) != 1 {
+		t.Errorf("only the reject chain gets a catch-all:\n%s", out)
+	}
+}

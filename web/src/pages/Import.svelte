@@ -16,6 +16,15 @@
     for (const k of ['routes', 'rules', 'firewall']) for (const x of res[k] ?? []) sel[k][x.id] = true
   }
 
+  // Skipped rules, grouped by the reason they can't be imported.
+  const skippedGroups = $derived.by(() => {
+    const groups = new Map()
+    for (const x of scan?.skipped ?? []) {
+      if (!groups.has(x.reason)) groups.set(x.reason, [])
+      groups.get(x.reason).push(x)
+    }
+    return [...groups].map(([reason, items]) => ({ reason, items })).sort((a, b) => b.items.length - a.items.length)
+  })
   const ids = (m) => Object.keys(m).filter((k) => m[k])
   const count = $derived(scan ? ids(sel.routes).length + ids(sel.rules).length + ids(sel.firewall).length : 0)
 
@@ -99,6 +108,32 @@
     {@render group('Routes', 'routes', scan.routes, routeText)}
     {@render group('Policy rules', 'rules', scan.rules, ruleText)}
     {@render group('Firewall rules', 'firewall', scan.firewall, fwText)}
+
+    {#if scan.skipped?.length}
+      <section class="card">
+        <header class="border-b border-slate-800 px-4 py-3">
+          <h3 class="text-sm font-semibold">Can't be imported <span class="font-normal text-slate-500">{scan.skipped.length}</span></h3>
+          <p class="mt-1 text-xs text-slate-500">These rules use options mini-net-man has no equivalent for. They are not changed: they keep working where they are, and nothing here touches them. To keep their effect, recreate them by hand as firewall rules or leave them in place.</p>
+        </header>
+        {#each skippedGroups as g (g.reason)}
+          <!-- A handful is shown open so the rules are visible at once; a long list (Docker adds hundreds) stays collapsed. -->
+          <details class="border-b border-slate-800 last:border-b-0" open={scan.skipped.length <= 30}>
+            <summary class="flex cursor-pointer items-start justify-between gap-3 px-4 py-2.5 text-sm hover:bg-slate-800/40">
+              <span class="min-w-0 break-words">{g.reason}</span>
+              <span class="shrink-0 text-slate-500">{g.items.length}</span>
+            </summary>
+            <ul class="space-y-1.5 px-4 pb-3">
+              {#each g.items as x}
+                <li class="flex flex-wrap items-baseline gap-2">
+                  <span class="badge bg-slate-800 text-slate-400">{x.source}</span>
+                  <code class="mono min-w-0 break-all text-xs text-slate-300">{x.text}</code>
+                </li>
+              {/each}
+            </ul>
+          </details>
+        {/each}
+      </section>
+    {/if}
 
     {#if scan.policy}
       <label class="card flex items-center gap-3 p-4 text-sm">

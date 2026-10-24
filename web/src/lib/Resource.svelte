@@ -12,6 +12,9 @@
     orderable = false,
     sort = null,
     generated = [],
+    defaults = [], // rows for each chain's default action: editable, but not deletable or movable
+    defaultOptions = [],
+    ondefault = () => {},
     addLabel = 'Add',
     onchange = () => {},
   } = $props()
@@ -131,6 +134,27 @@
                   {v}
                   {#if ci === 0}<span class="badge ml-2 bg-accent-600/20 text-accent-300" title="Created by Client Routing">generated</span>{/if}
                 </span>
+              </td>
+            {/each}
+            <td class="td max-sm:hidden"></td>
+          </tr>
+        {/each}
+        {#each defaults as item (item.id)}
+          <tr class="bg-slate-950/50 max-sm:block max-sm:px-4 max-sm:py-3">
+            {#each columns as col, ci}
+              {@const v = cell(col, item)}
+              <td class="td max-sm:flex max-sm:items-center max-sm:justify-between max-sm:gap-4 max-sm:px-0 max-sm:py-0.5 {col.mono ? 'mono' : ''} {ci > 0 && col.key !== 'action' && (v === '' || v == null) ? 'max-sm:hidden' : ''}">
+                <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{col.label}</span>
+                {#if col.key === 'action'}
+                  <select class="input w-auto py-0.5 text-xs" aria-label="Default action of {item.chain}" value={item.action} onchange={(e) => ondefault(item, e.currentTarget.value)}>
+                    {#each defaultOptions as o}<option value={o}>{o}</option>{/each}
+                  </select>
+                {:else}
+                  <span class="min-w-0 break-words text-slate-400 italic max-sm:text-right">
+                    {v}
+                    {#if ci === 0}<span class="badge ml-2 bg-slate-800 text-slate-400 not-italic" title="What happens to anything no rule above decided">default</span>{/if}
+                  </span>
+                {/if}
               </td>
             {/each}
             <td class="td max-sm:hidden"></td>

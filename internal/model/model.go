@@ -101,9 +101,11 @@ type Firewall struct {
 	Rules  []FWRule       `yaml:"rules" json:"rules"`
 }
 
-// FirewallPolicy is the default verdict of each filter base chain.
+// FirewallPolicy is what happens to a packet that no rule in a filter chain
+// decided: accept, drop, or reject (drop, but tell the sender). nftables has
+// no reject policy, so it is built as a final catch-all reject rule.
 type FirewallPolicy struct {
-	Input   string `yaml:"input" json:"input"` // accept | drop
+	Input   string `yaml:"input" json:"input"` // accept | drop | reject
 	Forward string `yaml:"forward" json:"forward"`
 	Output  string `yaml:"output" json:"output"`
 }

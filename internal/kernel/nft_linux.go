@@ -46,7 +46,7 @@ func (Linux) ApplyFirewall(fw model.Firewall) error {
 			Priority: nftables.ChainPriorityRef(nftables.ChainPriority(d.prio)),
 		}
 		pol := nftables.ChainPolicyAccept
-		if d.policy != nil && policyOr(d.policy(fw.Policy)) == "drop" {
+		if p, _ := chainPolicy(d, fw); p == "drop" {
 			pol = nftables.ChainPolicyDrop
 		}
 		ch.Policy = &pol
@@ -67,6 +67,17 @@ func (Linux) ApplyFirewall(fw model.Firewall) error {
 				nr.UserData = userdata.AppendString(nil, userdata.TypeComment, r.Comment)
 			}
 			c.AddRule(nr)
+		}
+	}
+	// A "reject" default is a catch-all rule at the very end of the chain.
+	for _, d := range chainDefs {
+		if _, final := chainPolicy(d, fw); final {
+			exprs, err := action(model.FWRule{Action: "reject"})
+			if err != nil {
+				return err
+			}
+			c.AddRule(&nftables.Rule{Table: tbl, Chain: chains[d.name], Exprs: exprs,
+				UserData: userdata.AppendString(nil, userdata.TypeComment, "default policy")})
 		}
 	}
 	return c.Flush()

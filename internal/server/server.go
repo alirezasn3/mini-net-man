@@ -405,6 +405,7 @@ func (s *Server) importScan(w http.ResponseWriter, r *http.Request) {
 	p.Rules = filter(p.Rules, func(x model.Rule) bool { return !haveU[x.Key()] })
 	p.Firewall = filter(p.Firewall, func(x model.FWRule) bool { return !haveF[fwKey(x)] })
 	p.Notes = orEmpty(p.Notes)
+	p.Skipped = orEmpty(p.Skipped)
 	s.scan = &p
 	writeJSON(w, p)
 }

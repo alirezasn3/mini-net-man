@@ -20,19 +20,26 @@
     reload()
   })
 
-  async function setPolicy(chain, value) {
-    if (value === 'drop' && chain === 'input' && !confirm('Default-drop on input blocks everything not explicitly allowed, including this panel. Make sure a rule allows its port first. Continue?')) {
+  // One row per filter chain, shown at the end of the rule list.
+  const defaults = $derived(['input', 'forward', 'output'].map((chain) => ({ id: 'default-' + chain, chain, action: policy[chain], default: true, comment: 'default action' })))
+  const defaultMessage = {
+    input: 'This changes what happens to everything not explicitly allowed above, including this panel. Make sure a rule above allows its port first.',
+  }
+
+  async function setDefault(item, value) {
+    const risky = value !== 'accept' && item.chain === 'input'
+    if (risky && !confirm(defaultMessage.input + ' Continue?')) {
       await reload()
       return
     }
-    await act(() => api('PUT', '/api/firewall/policy', { ...policy, [chain]: value }), 'Policy updated')
+    await act(() => api('PUT', '/api/firewall/policy', { ...policy, [item.chain]: value }), `Default for ${item.chain}: ${value}`)
     await reload()
   }
 
   const chains = ['input', 'forward', 'output', 'dstnat', 'srcnat']
   const actions = ['accept', 'drop', 'reject', 'return', 'masquerade', 'dnat', 'snat']
   const match = (r) =>
-    [
+    r.default ? 'everything not matched above' : [
       r.family && r.family.replace('ipv', 'IPv'),
       r.in_iface && `in ${r.in_iface}`,
       r.out_iface && `out ${r.out_iface}`,
@@ -50,22 +57,8 @@
 
 <div class="space-y-5">
   <p class="text-sm text-slate-500">
-    Rules live in their own nftables table, <span class="mono">inet mini-net-man</span> (IPv4 and IPv6), replaced atomically on every change. A rule with no address and no Family applies to both families. Rules in a chain run top to bottom; <b>dstnat</b> and <b>srcnat</b> are the NAT chains (like MikroTik's dst-nat / src-nat).
+    Rules live in their own nftables table, <span class="mono">inet mini-net-man</span> (IPv4 and IPv6), replaced atomically on every change. A rule with no address and no Family applies to both families. Rules in a chain run top to bottom; <b>dstnat</b> and <b>srcnat</b> are the NAT chains (like MikroTik's dst-nat / src-nat). The three <b>default</b> rows at the end say what happens to anything no rule decided: <b>accept</b> lets it through, <b>drop</b> discards it silently, <b>reject</b> discards it and tells the sender, so it fails at once instead of timing out.
   </p>
-
-  <section class="card p-4">
-    <h2 class="mb-3 text-sm font-semibold">Default policy</h2>
-    <div class="flex flex-wrap gap-4">
-      {#each ['input', 'forward', 'output'] as c}
-        <div>
-          <label class="label" for="pol-{c}">{c}</label>
-          <select id="pol-{c}" class="input w-32" value={policy[c]} onchange={(e) => setPolicy(c, e.currentTarget.value)}>
-            <option>accept</option><option>drop</option>
-          </select>
-        </div>
-      {/each}
-    </div>
-  </section>
 
   <Resource
     title="Firewall rules"
@@ -74,6 +67,9 @@
     orderable
     onchange={reload}
     {generated}
+    {defaults}
+    defaultOptions={['accept', 'drop', 'reject']}
+    ondefault={setDefault}
     columns={[
       { key: 'chain', label: 'Chain', mono: true },
       { key: 'action', label: 'Action', mono: true, render: target },

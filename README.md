@@ -4,11 +4,11 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 
 - **Interfaces & addresses**: see interfaces, add extra IPs.
 - **Routes** and **policy rules**: `ip route … table N` and `ip rule … priority N`, created by hand.
-- **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically.
+- **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically. Each chain's default action (accept, drop or reject) is the last row of the rule list and editable there.
 - **Client routing** (optional): send chosen clients out through a chosen interface. It only generates ordinary routes, rules and firewall entries, shown as *generated*.
 - **Ports**: which program is listening on which port (like `ss -tulnp`), and whether it is reachable from every interface or only this machine.
 - **Connections**: the kernel's connection-tracking table: every connection, including your VPN clients' traffic passing through. Each is labelled with its client, the exit interface and the NAT applied, and optionally bytes up and down. Filter by client, state or protocol.
-- **Import**: adopts existing `ip rule`/`ip route`, `iptables-save`, ufw and iptables-persistent rules.
+- **Import**: adopts existing `ip rule`/`ip route`, `iptables-save`, ufw and iptables-persistent rules, and lists the ones it can't convert with the reason for each (a module with no equivalent, a jump to another chain, a negated match, ufw rate limiting, ...).
 - **Safe mode**: changes revert automatically unless you confirm, or if the browser disconnects.
 
 IPv4 and IPv6 are both supported. Linux only for the real backend (`-mock` runs anywhere).

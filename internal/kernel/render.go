@@ -34,16 +34,27 @@ func policyOr(s string) string {
 	return s
 }
 
+// chainPolicy returns the nftables policy of a chain and whether it also needs
+// a final catch-all reject rule (nftables policies are only accept or drop).
+func chainPolicy(c chainDef, fw model.Firewall) (policy string, finalReject bool) {
+	if c.policy == nil {
+		return "accept", false
+	}
+	switch p := policyOr(c.policy(fw.Policy)); p {
+	case "reject":
+		return "accept", true
+	default:
+		return p, false
+	}
+}
+
 // RenderNFT writes the firewall as nft syntax. It is what the UI shows as the
 // preview; the Linux backend builds the same ruleset natively.
 func RenderNFT(fw model.Firewall) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "table inet %s {\n", TableName)
 	for _, c := range chainDefs {
-		pol := "accept"
-		if c.policy != nil {
-			pol = policyOr(c.policy(fw.Policy))
-		}
+		pol, finalReject := chainPolicy(c, fw)
 		fmt.Fprintf(&b, "\tchain %s {\n\t\ttype %s hook %s priority %d; policy %s;\n", c.name, c.ctype, c.hook, c.prio, pol)
 		for _, r := range fw.Rules {
 			if r.Disabled || r.Chain != c.name {
@@ -53,6 +64,9 @@ func RenderNFT(fw model.Firewall) string {
 			for _, line := range renderRule(r) {
 				fmt.Fprintf(&b, "\t\t%s\n", line)
 			}
+		}
+		if finalReject {
+			b.WriteString("\t\treject comment \"default policy\"\n")
 		}
 		b.WriteString("\t}\n")
 	}

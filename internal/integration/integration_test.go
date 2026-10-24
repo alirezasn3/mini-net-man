@@ -892,3 +892,58 @@ func TestFailedItemsAreRetried(t *testing.T) {
 	})
 	waitFor(t, 5*time.Second, "issue to clear", func() bool { return len(v.eng.Issues()) == 0 })
 }
+
+// A default policy of reject must refuse what no rule accepted (immediately,
+// where drop would just hang), and keep accepting what the rules allow.
+func TestDefaultPolicyReject(t *testing.T) {
+	v := newEnv(t)
+	peer(t)
+	listen(t, "9000")
+	listen(t, "9001")
+	const h4 = "10.55.0.1"
+
+	set := func(policy string) {
+		t.Helper()
+		v.update(t, func(c *model.Config) {
+			c.Firewall.Policy = model.FirewallPolicy{Input: policy}
+			c.Firewall.Rules = []model.FWRule{
+				{ID: "a", Chain: "input", Action: "accept", ConnState: "established,related"},
+				{ID: "b", Chain: "input", Action: "accept", Proto: "tcp", DstPort: "9001"},
+			}
+		})
+	}
+	took := func(port string) (bool, time.Duration) {
+		start := time.Now()
+		ok := connect(h4, port)
+		return ok, time.Since(start)
+	}
+
+	set("reject")
+	if ok, _ := took("9001"); !ok {
+		t.Error("the allowed port should still work under a reject default")
+	}
+	ok, d := took("9000")
+	if ok || d > 900*time.Millisecond {
+		t.Errorf("9000 under reject: reachable=%v after %v; want a refusal well inside the 1s connect timeout", ok, d)
+	}
+	nft := sh(t, "nft list chain inet mini-net-man input")
+	contains(t, "nft", nft, "policy accept", `reject comment "default policy"`)
+	if strings.LastIndex(nft, `reject comment "default policy"`) < strings.LastIndex(nft, "tcp dport 9001 accept") {
+		t.Errorf("the catch-all reject must be the last rule:\n%s", nft)
+	}
+
+	set("drop")
+	ok, d = took("9000")
+	if ok || d < 900*time.Millisecond {
+		t.Errorf("9000 under drop: reachable=%v after %v; a drop should leave the connection hanging until the timeout", ok, d)
+	}
+	nft = sh(t, "nft list chain inet mini-net-man input")
+	contains(t, "nft", nft, "policy drop")
+	absent(t, "nft", nft, "default policy")
+
+	set("accept")
+	if ok, _ := took("9000"); !ok {
+		t.Error("9000 should be reachable again under an accept default")
+	}
+	absent(t, "nft", sh(t, "nft list chain inet mini-net-man input"), "reject")
+}
