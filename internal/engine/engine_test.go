@@ -627,3 +627,26 @@ func TestKernelRefusesUnlistedSysctls(t *testing.T) {
 		}
 	}
 }
+
+func TestClampMSSValidation(t *testing.T) {
+	ok := model.FWRule{ID: "a", Chain: "mangle", Action: "clamp-mss", OutIface: "wg0"}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("plain clamp rule: %v", err)
+	}
+	ok.MSS = 1300
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("fixed clamp rule: %v", err)
+	}
+	for name, r := range map[string]model.FWRule{
+		"wrong chain":   {ID: "b", Chain: "forward", Action: "clamp-mss"},
+		"other action":  {ID: "c", Chain: "mangle", Action: "accept"},
+		"udp":           {ID: "d", Chain: "mangle", Action: "clamp-mss", Proto: "udp"},
+		"mss too small": {ID: "e", Chain: "mangle", Action: "clamp-mss", MSS: 100},
+		"mss too large": {ID: "f", Chain: "mangle", Action: "clamp-mss", MSS: 70000},
+		"negative mss":  {ID: "g", Chain: "mangle", Action: "clamp-mss", MSS: -5},
+	} {
+		if err := r.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

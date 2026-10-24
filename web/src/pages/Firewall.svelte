@@ -36,8 +36,8 @@
     await reload()
   }
 
-  const chains = ['input', 'forward', 'output', 'dstnat', 'srcnat']
-  const actions = ['accept', 'drop', 'reject', 'return', 'masquerade', 'dnat', 'snat']
+  const chains = ['input', 'forward', 'output', 'mangle', 'dstnat', 'srcnat']
+  const actions = ['accept', 'drop', 'reject', 'return', 'masquerade', 'dnat', 'snat', 'clamp-mss']
   const match = (r) =>
     r.default ? 'everything not matched above' : [
       r.family && r.family.replace('ipv', 'IPv'),
@@ -52,12 +52,12 @@
     ]
       .filter(Boolean)
       .join(' ') || 'any'
-  const target = (r) => (r.to_addr ? `${r.action} → ${r.to_addr}${r.to_port ? ':' + r.to_port : ''}` : r.action)
+  const target = (r) => (r.action === 'clamp-mss' ? (r.mss ? `clamp-mss ${r.mss}` : 'clamp-mss to route MTU') : r.to_addr ? `${r.action} → ${r.to_addr}${r.to_port ? ':' + r.to_port : ''}` : r.action)
 </script>
 
 <div class="space-y-5">
   <p class="text-sm text-slate-500">
-    Rules live in their own nftables table, <span class="mono">inet mini-net-man</span> (IPv4 and IPv6), replaced atomically on every change. A rule with no address and no Family applies to both families. Rules in a chain run top to bottom; <b>dstnat</b> and <b>srcnat</b> are the NAT chains (like MikroTik's dst-nat / src-nat). The three <b>default</b> rows at the end say what happens to anything no rule decided: <b>accept</b> lets it through, <b>drop</b> discards it silently, <b>reject</b> discards it and tells the sender, so it fails at once instead of timing out.
+    Rules live in their own nftables table, <span class="mono">inet mini-net-man</span> (IPv4 and IPv6), replaced atomically on every change. A rule with no address and no Family applies to both families. Rules in a chain run top to bottom; <b>dstnat</b> and <b>srcnat</b> are the NAT chains (like MikroTik's dst-nat / src-nat); <b>mangle</b> holds MSS clamping. The three <b>default</b> rows at the end say what happens to anything no rule decided: <b>accept</b> lets it through, <b>drop</b> discards it silently, <b>reject</b> discards it and tells the sender, so it fails at once instead of timing out.
   </p>
 
   <Resource
@@ -77,8 +77,8 @@
       { key: 'comment', label: 'Comment' },
     ]}
     fields={[
-      { key: 'chain', label: 'Chain', type: 'select', options: chains, help: (d) => ({ input: 'Traffic addressed to this machine.', forward: 'Traffic passing through this machine to somewhere else.', output: 'Traffic this machine creates itself.', dstnat: 'Rewrites the destination before routing: port forwarding.', srcnat: 'Rewrites the source on the way out: masquerade.' })[d.chain] },
-      { key: 'action', label: 'Action', type: 'select', options: actions, help: (d) => ({ accept: 'Let the packet through.', drop: 'Discard it silently.', reject: 'Discard it and tell the sender, so it fails fast.', return: 'Stop checking this chain.', masquerade: 'Use the outgoing interface\u2019s address as the source. srcnat chain only.', dnat: 'Send it to another address or port. dstnat chain only.', snat: 'Use a fixed address as the source. srcnat chain only.' })[d.action] },
+      { key: 'chain', label: 'Chain', type: 'select', options: chains, help: (d) => ({ input: 'Traffic addressed to this machine.', forward: 'Traffic passing through this machine to somewhere else.', output: 'Traffic this machine creates itself.', mangle: 'Adjusts packets passing through. Used for MSS clamping.', dstnat: 'Rewrites the destination before routing: port forwarding.', srcnat: 'Rewrites the source on the way out: masquerade.' })[d.chain] },
+      { key: 'action', label: 'Action', type: 'select', options: actions, help: (d) => ({ accept: 'Let the packet through.', drop: 'Discard it silently.', reject: 'Discard it and tell the sender, so it fails fast.', return: 'Stop checking this chain.', masquerade: 'Use the outgoing interface\u2019s address as the source. srcnat chain only.', dnat: 'Send it to another address or port. dstnat chain only.', snat: 'Use a fixed address as the source. srcnat chain only.', 'clamp-mss': 'Lower the TCP segment size announced when a connection starts, so packets fit a smaller link and are not silently dropped. mangle chain only.' })[d.action] },
       { key: 'in_iface', label: 'In interface', type: 'iface', mono: true, help: 'Only traffic that arrived on this interface. Empty matches any.', show: (d) => d.chain !== 'output' && d.chain !== 'srcnat' },
       { key: 'out_iface', label: 'Out interface', type: 'iface', mono: true, help: 'Only traffic leaving through this interface. Empty matches any.', show: (d) => d.chain !== 'input' && d.chain !== 'dstnat' },
       { key: 'src', label: 'Source', type: 'text', mono: true, placeholder: '10.0.0.0/16 or fd00::/64', help: 'Only traffic from this address or network.' },
@@ -90,9 +90,10 @@
       { key: 'dst_port', label: 'Destination port', type: 'text', placeholder: '22 or 80,443', help: 'The port being connected to: one port, a range, or a list.', show: (d) => d.proto === 'tcp' || d.proto === 'udp' },
       { key: 'to_addr', label: 'To address', type: 'text', mono: true, help: 'The address to send matching traffic to.', show: (d) => d.action === 'dnat' || d.action === 'snat' },
       { key: 'to_port', label: 'To port', type: 'number', help: 'Optional. 0 keeps the original port.', show: (d) => d.action === 'dnat' || d.action === 'snat' },
+      { key: 'mss', label: 'MSS', type: 'number', help: '0 fits the outgoing route\u2019s MTU (recommended, and what pppoe/tunnel clamping usually wants). Or give a fixed size such as 1300. An MSS already lower is never raised.', show: (d) => d.action === 'clamp-mss' },
       { key: 'comment', label: 'Comment', type: 'text', wide: true, help: 'Optional note for yourself. It also shows in nft list.' },
     ]}
-    blank={() => ({ chain: 'forward', action: 'accept', family: '', in_iface: '', out_iface: '', src: '', dst: '', proto: '', src_port: '', dst_port: '', conn_state: '', to_addr: '', to_port: 0, comment: '', disabled: false })}
+    blank={() => ({ chain: 'forward', action: 'accept', family: '', in_iface: '', out_iface: '', src: '', dst: '', proto: '', src_port: '', dst_port: '', conn_state: '', to_addr: '', to_port: 0, mss: 0, comment: '', disabled: false })}
   />
 
   <section class="card">

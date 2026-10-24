@@ -118,11 +118,16 @@ type FirewallPolicy struct {
 	Output  string `yaml:"output" json:"output"`
 }
 
+// ActionClampMSS shrinks the TCP MSS of connections being set up through this
+// machine (chain mangle only). MSS 0 means "to fit the outgoing route's MTU".
+const ActionClampMSS = "clamp-mss"
+
 // FW chains.
 const (
 	ChainInput       = "input"
 	ChainForward     = "forward"
 	ChainOutput      = "output"
+	ChainMangle      = "mangle"
 	ChainPrerouting  = "dstnat"
 	ChainPostrouting = "srcnat"
 )
@@ -130,8 +135,8 @@ const (
 // FWRule is one firewall rule. Rules are evaluated per chain in list order.
 type FWRule struct {
 	ID        string `yaml:"id" json:"id"`
-	Chain     string `yaml:"chain" json:"chain"`   // input|forward|output|dstnat|srcnat
-	Action    string `yaml:"action" json:"action"` // accept|drop|reject|masquerade|dnat|snat|return
+	Chain     string `yaml:"chain" json:"chain"`   // input|forward|output|mangle|dstnat|srcnat
+	Action    string `yaml:"action" json:"action"` // accept|drop|reject|masquerade|dnat|snat|return|clamp-mss
 	InIface   string `yaml:"in_iface,omitempty" json:"in_iface"`
 	OutIface  string `yaml:"out_iface,omitempty" json:"out_iface"`
 	Src       string `yaml:"src,omitempty" json:"src"`
@@ -143,6 +148,7 @@ type FWRule struct {
 	ConnState string `yaml:"conn_state,omitempty" json:"conn_state"` // comma list: new,established,related,invalid
 	ToAddr    string `yaml:"to_addr,omitempty" json:"to_addr"`       // dnat/snat target IP
 	ToPort    int    `yaml:"to_port,omitempty" json:"to_port"`       // dnat/snat target port
+	MSS       int    `yaml:"mss,omitempty" json:"mss"`               // clamp-mss: size to clamp to; 0 = fit the route\'s MTU
 	Comment   string `yaml:"comment,omitempty" json:"comment"`
 	Disabled  bool   `yaml:"disabled,omitempty" json:"disabled"`
 	Source    string `yaml:"-" json:"source,omitempty"`

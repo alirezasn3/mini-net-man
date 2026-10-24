@@ -270,15 +270,28 @@ func parsePorts(s string) error {
 
 func (r FWRule) Validate() error {
 	switch r.Chain {
-	case ChainInput, ChainForward, ChainOutput, ChainPrerouting, ChainPostrouting:
+	case ChainInput, ChainForward, ChainOutput, ChainMangle, ChainPrerouting, ChainPostrouting:
 	default:
 		return fmt.Errorf("invalid chain %q", r.Chain)
 	}
 	nat := r.Chain == ChainPrerouting || r.Chain == ChainPostrouting
+	if r.Chain == ChainMangle && r.Action != ActionClampMSS {
+		return fmt.Errorf("the mangle chain only takes %s rules", ActionClampMSS)
+	}
 	switch r.Action {
 	case "accept", "drop", "reject", "return":
 		if nat && r.Action != "accept" && r.Action != "return" {
 			return fmt.Errorf("action %q is not valid in a NAT chain", r.Action)
+		}
+	case ActionClampMSS:
+		if r.Chain != ChainMangle {
+			return fmt.Errorf("%s only works in the mangle chain", ActionClampMSS)
+		}
+		if r.Proto != "" && r.Proto != "tcp" {
+			return fmt.Errorf("%s only applies to tcp", ActionClampMSS)
+		}
+		if r.MSS != 0 && (r.MSS < 536 || r.MSS > 9000) {
+			return fmt.Errorf("mss must be 0 (fit the route's MTU) or between 536 and 9000")
 		}
 	case "masquerade":
 		if r.Chain != ChainPostrouting {

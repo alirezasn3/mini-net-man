@@ -20,6 +20,7 @@ type chainDef struct {
 
 // chainDefs lists the base chains in the order they are created.
 var chainDefs = []chainDef{
+	{model.ChainMangle, "filter", "forward", -150, nil},
 	{model.ChainPrerouting, "nat", "prerouting", -100, nil},
 	{model.ChainInput, "filter", "input", 0, func(p model.FirewallPolicy) string { return p.Input }},
 	{model.ChainForward, "filter", "forward", 0, func(p model.FirewallPolicy) string { return p.Forward }},
@@ -86,6 +87,9 @@ func splitPorts(s string) []string {
 }
 
 func renderRule(r model.FWRule) []string {
+	if r.Action == model.ActionClampMSS {
+		r.Proto = "tcp"
+	}
 	var head []string
 	fam := r.EffFamily()
 	// An address match already pins the family in nft syntax; otherwise say it.
@@ -121,6 +125,13 @@ func renderRule(r model.FWRule) []string {
 		tail = append(tail, "ct state "+strings.ReplaceAll(r.ConnState, " ", ""))
 	}
 	switch r.Action {
+	case model.ActionClampMSS:
+		tail = append(tail, "tcp flags & (syn | rst) == syn")
+		if r.MSS == 0 {
+			tail = append(tail, "tcp option maxseg size set rt mtu")
+		} else {
+			tail = append(tail, fmt.Sprintf("tcp option maxseg size > %d tcp option maxseg size set %d", r.MSS, r.MSS))
+		}
 	case "masquerade":
 		tail = append(tail, "masquerade")
 	case "dnat", "snat":

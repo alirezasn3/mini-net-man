@@ -166,6 +166,9 @@ func splitList(s string) []string {
 // buildRule returns one expression list per source/destination port
 // alternative ("80,443" becomes two rules).
 func buildRule(r model.FWRule) ([][]expr.Any, error) {
+	if r.Action == model.ActionClampMSS {
+		r.Proto = "tcp"
+	}
 	var head []expr.Any
 	// In an inet table nothing narrows a rule to one family unless we say so.
 	switch r.EffFamily() {
@@ -260,6 +263,8 @@ func action(r model.FWRule) ([]expr.Any, error) {
 	case "reject":
 		// icmpx works for both families.
 		return []expr.Any{&expr.Reject{Type: unix.NFT_REJECT_ICMPX_UNREACH, Code: unix.NFT_REJECT_ICMPX_PORT_UNREACH}}, nil
+	case model.ActionClampMSS:
+		return clampMSS(r.MSS), nil
 	case "masquerade":
 		return []expr.Any{&expr.Masq{}}, nil
 	case "dnat", "snat":
@@ -284,4 +289,35 @@ func action(r model.FWRule) ([]expr.Any, error) {
 		return append(out, nat), nil
 	}
 	return nil, fmt.Errorf("unknown action %q", r.Action)
+}
+
+// clampMSS matches connection setup (SYN or SYN-ACK, not RST) and rewrites the
+// MSS option; a packet without one is left alone, because loading the option
+// breaks the rule. Size 0 uses the kernel's own figure for the outgoing route
+// (its MTU minus the headers); otherwise the MSS is only ever lowered to size.
+func clampMSS(size int) []expr.Any {
+	const synRst, syn = 0x06, 0x02
+	out := []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{synRst}, Xor: []byte{0}},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{syn}},
+	}
+	opt := func() *expr.Exthdr {
+		return &expr.Exthdr{Type: unix.TCPOPT_MAXSEG, Offset: 2, Len: 2, Op: expr.ExthdrOpTcpopt}
+	}
+	if size == 0 {
+		out = append(out,
+			&expr.Rt{Register: 1, Key: expr.RtTCPMSS},
+			&expr.Byteorder{SourceRegister: 1, DestRegister: 1, Op: expr.ByteorderHton, Len: 2, Size: 2})
+	} else {
+		be := binaryutil.BigEndian.PutUint16(uint16(size))
+		load := opt()
+		load.DestRegister = 1
+		out = append(out, load,
+			&expr.Cmp{Op: expr.CmpOpGt, Register: 1, Data: be},
+			&expr.Immediate{Register: 1, Data: be})
+	}
+	set := opt()
+	set.SourceRegister = 1
+	return append(out, set)
 }

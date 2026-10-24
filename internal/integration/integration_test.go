@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -440,6 +441,97 @@ func TestFirewallRuleset(t *testing.T) {
 	if tables := sh(t, "nft list tables"); strings.Contains(tables, "table ip mini-net-man") {
 		t.Errorf("legacy ip table still present:\n%s", tables)
 	}
+}
+
+// The firewall sits between a client (MTU 1500) and a server reached through a
+// smaller link (1400), the situation a tunnel exit creates. The server's view of
+// the connection (ss reports its MSS) shows what the SYN carried after the rule.
+func TestClampMSS(t *testing.T) {
+	v := newEnv(t)
+	sh(t, `
+echo 1 > /proc/sys/net/ipv4/ip_forward
+echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
+for n in cli srv; do ip netns add $n; done
+ip link add rc0 type veth peer name c0 netns cli
+ip link add rs0 type veth peer name s0 netns srv
+ip link set rc0 up; ip link set rs0 up mtu 1400
+ip addr add 10.61.0.1/24 dev rc0; ip addr add fd61::1/64 dev rc0 nodad
+ip addr add 10.62.0.1/24 dev rs0; ip addr add fd62::1/64 dev rs0 nodad
+ip netns exec cli sh -c 'ip link set lo up; ip link set c0 up; ip addr add 10.61.0.2/24 dev c0; ip addr add fd61::2/64 dev c0 nodad; ip route add 10.62.0.0/24 via 10.61.0.1; ip route add fd62::/64 via fd61::1'
+ip netns exec srv sh -c 'ip link set lo up; ip link set s0 up; ip addr add 10.62.0.2/24 dev s0; ip addr add fd62::2/64 dev s0 nodad; ip route add 10.61.0.0/24 via 10.62.0.1; ip route add fd61::/64 via fd62::1'
+sleep 1`)
+	t.Cleanup(func() { try("ip netns del cli; ip netns del srv") })
+	for _, fam := range []string{"-4", "-6"} {
+		c := exec.Command("ip", "netns", "exec", "srv", "nc", fam, "-l", "-k", "9000")
+		if err := c.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Process.Kill(); _ = c.Wait() })
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// serverMSS opens a connection from the client and returns the MSS the server settled on.
+	serverMSS := func(addr string) int {
+		t.Helper()
+		fam := "-4"
+		if strings.Contains(addr, ":") {
+			fam = "-6"
+		}
+		c := exec.Command("ip", "netns", "exec", "cli", "sh", "-c", "sleep 3 | nc "+fam+" "+addr+" 9000")
+		c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := c.Start(); err != nil {
+			t.Fatal(err)
+		}
+		stop := func() { _ = syscall.Kill(-c.Process.Pid, syscall.SIGKILL); _ = c.Wait() }
+		defer stop()
+		var out string
+		waitFor(t, 3*time.Second, "connection on the server", func() bool {
+			out, _ = try("ip netns exec srv ss -tin state established '( sport = :9000 )'")
+			return strings.Contains(out, "mss:")
+		})
+		var mss int
+		if _, err := fmt.Sscanf(out[strings.Index(out, "mss:"):], "mss:%d", &mss); err != nil {
+			t.Fatalf("no mss in %q", out)
+		}
+		stop()
+		waitFor(t, 3*time.Second, "connection to close", func() bool {
+			o, _ := try("ip netns exec srv ss -tn state established '( sport = :9000 )'")
+			return !strings.Contains(o, "9000")
+		})
+		return mss
+	}
+	between := func(what string, got, lo, hi int) {
+		t.Helper()
+		if got < lo || got > hi {
+			t.Errorf("%s: server MSS %d, want %d..%d", what, got, lo, hi)
+		}
+	}
+	rule := func(mss int) {
+		v.update(t, func(c *model.Config) {
+			c.Firewall.Rules = []model.FWRule{{ID: "m", Chain: "mangle", Action: "clamp-mss", OutIface: "rs0", MSS: mss}}
+		})
+	}
+
+	between("no rule, v4", serverMSS("10.62.0.2"), 1400, 1460)
+	rule(0)
+	contains(t, "nft", sh(t, "nft list table inet mini-net-man"), "tcp option maxseg size set rt mtu")
+	between("path MTU, v4", serverMSS("10.62.0.2"), 1300, 1360)
+	between("path MTU, v6", serverMSS("fd62::2"), 1280, 1340)
+
+	rule(1200)
+	between("fixed 1200, v4", serverMSS("10.62.0.2"), 1100, 1200)
+
+	// A client that already asked for less is never raised.
+	rule(0)
+	sh(t, "ip netns exec cli ip route replace 10.62.0.0/24 via 10.61.0.1 advmss 1000")
+	between("small client MSS kept", serverMSS("10.62.0.2"), 900, 1000)
+
+	// A rule for another interface leaves it alone.
+	sh(t, "ip netns exec cli ip route replace 10.62.0.0/24 via 10.61.0.1")
+	v.update(t, func(c *model.Config) {
+		c.Firewall.Rules = []model.FWRule{{ID: "m", Chain: "mangle", Action: "clamp-mss", OutIface: "elsewhere0"}}
+	})
+	between("other interface, v4", serverMSS("10.62.0.2"), 1400, 1460)
 }
 
 // A ruleset the kernel rejects must leave the previous one untouched.

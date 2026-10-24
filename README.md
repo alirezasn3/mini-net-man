@@ -5,6 +5,7 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 - **Interfaces & addresses**: see interfaces, add extra IPs.
 - **Routes** and **policy rules**: `ip route … table N` and `ip rule … priority N`, created by hand.
 - **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically. Each chain's default action (accept, drop or reject) is the last row of the rule list and editable there.
+- **MSS clamping**: shrink the TCP segment size of connections passing through, so a tunnel or PPPoE exit with a smaller MTU doesn't stall large transfers (MikroTik's `change-mss` mangle rule).
 - **Health checks**: ping an address out of an interface, and make policy rules depend on the result. A rule is switched off while its check fails (say, an exit tunnel that has silently died) and back on when it recovers.
 - **Client routing** (optional): send chosen clients out through a chosen interface. It only generates ordinary routes, rules and firewall entries, shown as *generated*.
 - **Ports**: which program is listening on which port (like `ss -tulnp`), and whether it is reachable from every interface or only this machine.
@@ -76,6 +77,16 @@ Add a health check on the **Policy rules** page (name, address to ping, interfac
 - The ping is bound to the interface, so it goes out through it even if no route covers the target, which is what a WireGuard exit with `Table = off` needs. If an exit is reached through a **gateway** whose route is in a custom routing table, put that table in the check's *Routing table* field: mini-net-man then adds a helper rule `oif <interface> lookup <table>` (priority 1, shown as *generated*) that applies only to the check's own pings.
 - The reply has to get past Linux's reverse-path filter (`rp_filter`). In Ubuntu's default loose mode (2) that only needs the target to have *some* route on the machine, which a normal default route in the main table gives it. If a check times out although the exit clearly works, and `rp_filter` is 1 (strict) or the main table has no default route, set `net.ipv4.conf.<interface>.rp_filter=2` (or 0) on the exit interface.
 - IPv4 and IPv6 targets both work. A rule can't be saved if its check doesn't exist, and a check in use can't be deleted.
+
+## MSS clamping
+
+MikroTik's `/ip firewall mangle ... action=change-mss new-mss=1300` is a rule with action **clamp-mss** in the **mangle** chain. It rewrites the MSS in the SYN (and SYN-ACK) of TCP connections passing through, so both ends send packets that fit the smallest link on the path. Without it, a client with a 1500 MTU talking through a WireGuard exit (1420) or PPPoE (1492) relies on path-MTU discovery, and when an ICMP "fragmentation needed" message gets lost the symptom is a connection that works for small pages and then hangs on large downloads or TLS handshakes.
+
+- **MSS 0** (the default) fits the MTU of the route the packet is about to leave on, so it follows the interface instead of a number you have to keep right. A fixed value (say 1300) is the same as the MikroTik rule.
+- An MSS that is already lower is never raised.
+- Match with *Out interface* set to the exit (`wgBridge0`, `ppp0`). A rule with no interface clamps every forwarded connection, each to its own outgoing route.
+- It acts on forwarded traffic only. The machine's own connections already pick their MSS from the route.
+- A rule with *Out interface* set to the exit only sees what leaves through it: the SYN going out, which is what keeps downloads from stalling. The far side's SYN-ACK comes back in through the exit and leaves towards the client, so that rule doesn't touch it. If uploads still stall, add a second rule with *In interface* set to the exit and a fixed MSS 40 below its MTU (1380 for MTU 1420; 1360 for IPv6).
 
 ## Kernel tuning
 

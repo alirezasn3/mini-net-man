@@ -58,3 +58,19 @@ func TestRenderRejectPolicy(t *testing.T) {
 		t.Errorf("only the reject chain gets a catch-all:\n%s", out)
 	}
 }
+
+func TestRenderClampMSS(t *testing.T) {
+	out := RenderNFT(model.Firewall{Rules: []model.FWRule{
+		{Chain: "mangle", Action: "clamp-mss", OutIface: "wgBridge0"},
+		{Chain: "mangle", Action: "clamp-mss", OutIface: "ppp0", MSS: 1300, Family: "ipv4"},
+	}})
+	for _, want := range []string{
+		"type filter hook forward priority -150; policy accept;",
+		`oifname "wgBridge0" meta l4proto tcp tcp flags & (syn | rst) == syn tcp option maxseg size set rt mtu`,
+		`meta nfproto ipv4 oifname "ppp0" meta l4proto tcp tcp flags & (syn | rst) == syn tcp option maxseg size > 1300 tcp option maxseg size set 1300`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
