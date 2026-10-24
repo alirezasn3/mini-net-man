@@ -175,6 +175,18 @@ func validIface(s string) bool {
 	return s == "" || (len(s) <= 15 && !strings.ContainsAny(s, " /\t\n\"'"))
 }
 
+// validIfaceMatch is validIface for firewall matches, which also take a
+// trailing * to mean "any name starting with this" (wg* matches wg0, wgBridge1).
+func validIfaceMatch(s string) bool {
+	if i := strings.IndexByte(s, '*'); i >= 0 {
+		if i != len(s)-1 {
+			return false
+		}
+		s = s[:i]
+	}
+	return validIface(s)
+}
+
 // Validate checks one address entry.
 func (a Address) Validate() error {
 	if a.Interface == "" || !validIface(a.Interface) {
@@ -320,7 +332,7 @@ func (r FWRule) Validate() error {
 	if err := checkFamilies(r.Family, r.Src, r.Dst, r.ToAddr); err != nil {
 		return err
 	}
-	if !validIface(r.InIface) || !validIface(r.OutIface) {
+	if !validIfaceMatch(r.InIface) || !validIfaceMatch(r.OutIface) {
 		return fmt.Errorf("invalid interface name")
 	}
 	switch r.Proto {

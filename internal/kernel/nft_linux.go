@@ -99,6 +99,20 @@ func hookOf(h string) *nftables.ChainHook {
 
 func ifname(s string) []byte { return []byte(s + "\x00") }
 
+// matchIface compares an interface name. A trailing * makes it a prefix match:
+// the name is compared without its terminating NUL and only that many bytes
+// are looked at, which is how nft encodes "wg*". A bare * matches everything.
+func matchIface(key expr.MetaKey, name string) []expr.Any {
+	if name == "" || name == "*" {
+		return nil
+	}
+	data := ifname(name)
+	if prefix, ok := strings.CutSuffix(name, "*"); ok {
+		data = []byte(prefix)
+	}
+	return []expr.Any{&expr.Meta{Key: key, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: data}}
+}
+
 // matchAddr compares the source or destination address in the IP header.
 // The caller has already restricted the rule to the address's family, so the
 // payload offsets below are safe to read.
@@ -177,12 +191,8 @@ func buildRule(r model.FWRule) ([][]expr.Any, error) {
 	case "ipv6":
 		head = append(head, &expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}})
 	}
-	if r.InIface != "" {
-		head = append(head, &expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(r.InIface)})
-	}
-	if r.OutIface != "" {
-		head = append(head, &expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(r.OutIface)})
-	}
+	head = append(head, matchIface(expr.MetaKeyIIFNAME, r.InIface)...)
+	head = append(head, matchIface(expr.MetaKeyOIFNAME, r.OutIface)...)
 	if r.Src != "" {
 		e, err := matchAddr(true, r.Src)
 		if err != nil {

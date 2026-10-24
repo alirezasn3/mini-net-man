@@ -97,10 +97,10 @@ func renderRule(r model.FWRule) []string {
 		head = append(head, "meta nfproto "+fam)
 	}
 	ipw := map[string]string{"ipv4": "ip", "ipv6": "ip6"}[fam]
-	if r.InIface != "" {
+	if r.InIface != "" && r.InIface != "*" {
 		head = append(head, fmt.Sprintf("iifname %q", r.InIface))
 	}
-	if r.OutIface != "" {
+	if r.OutIface != "" && r.OutIface != "*" {
 		head = append(head, fmt.Sprintf("oifname %q", r.OutIface))
 	}
 	if r.Src != "" {

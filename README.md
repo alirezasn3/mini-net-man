@@ -4,7 +4,7 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 
 - **Interfaces & addresses**: see interfaces, add extra IPs.
 - **Routes** and **policy rules**: `ip route … table N` and `ip rule … priority N`, created by hand.
-- **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically. Each chain's default action (accept, drop or reject) is the last row of the rule list and editable there.
+- **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically. Interface fields take a trailing `*` as a wildcard (`wg*` matches `wg0` and `wgBridge1`). Each chain's default action (accept, drop or reject) is the last row of the rule list and editable there.
 - **MSS clamping**: shrink the TCP segment size of connections passing through, so a tunnel or PPPoE exit with a smaller MTU doesn't stall large transfers (MikroTik's `change-mss` mangle rule).
 - **Health checks**: ping an address out of an interface, and make policy rules depend on the result. A rule is switched off while its check fails (say, an exit tunnel that has silently died) and back on when it recovers.
 - **Client routing** (optional): send chosen clients out through a chosen interface. It only generates ordinary routes, rules and firewall entries, shown as *generated*.

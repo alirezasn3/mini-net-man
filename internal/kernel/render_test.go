@@ -74,3 +74,12 @@ func TestRenderClampMSS(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderInterfaceWildcard(t *testing.T) {
+	out := RenderNFT(model.Firewall{Rules: []model.FWRule{
+		{Chain: "forward", Action: "accept", InIface: "wg*", OutIface: "*"},
+	}})
+	if !strings.Contains(out, `iifname "wg*" accept`) || strings.Contains(out, "oifname") {
+		t.Errorf("wildcard rendering:\n%s", out)
+	}
+}

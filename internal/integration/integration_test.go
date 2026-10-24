@@ -534,6 +534,35 @@ sleep 1`)
 	between("other interface, v4", serverMSS("10.62.0.2"), 1400, 1460)
 }
 
+// A trailing * matches any interface name with that prefix, and only those.
+func TestInterfaceWildcard(t *testing.T) {
+	v := newEnv(t)
+	peer(t) // host side is veth0
+	const h4 = "10.55.0.1"
+	if !pingable(h4) {
+		t.Fatal("baseline connectivity is broken")
+	}
+	block := func(in string) bool {
+		t.Helper()
+		v.update(t, func(c *model.Config) {
+			c.Firewall.Rules = []model.FWRule{{ID: "w", Chain: "input", Action: "drop", Proto: "icmp", InIface: in}}
+		})
+		return pingable(h4)
+	}
+	for _, c := range []struct {
+		iface   string
+		blocked bool
+	}{
+		{"veth*", true}, {"vet*", true}, {"*", true}, {"veth0", true},
+		{"vx*", false}, {"veth00*", false}, {"veth1", false}, {"eth*", false},
+	} {
+		if got := block(c.iface); got == c.blocked {
+			t.Errorf("in_iface %q: ping reachable=%v, want %v", c.iface, got, !c.blocked)
+		}
+	}
+	contains(t, "nft", sh(t, "nft list table inet mini-net-man"), `iifname "eth*"`)
+}
+
 // A ruleset the kernel rejects must leave the previous one untouched.
 func TestFirewallAtomic(t *testing.T) {
 	v := newEnv(t)

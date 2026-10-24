@@ -650,3 +650,12 @@ func TestClampMSSValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestInterfaceWildcardValidation(t *testing.T) {
+	for name, want := range map[string]bool{"wg*": true, "*": true, "eth0": true, "w*g": false, "*wg": false, "wg**": false, "a b*": false} {
+		r := model.FWRule{ID: "a", Chain: "input", Action: "accept", InIface: name}
+		if err := r.Validate(); (err == nil) != want {
+			t.Errorf("%q: err=%v, want valid=%v", name, err, want)
+		}
+	}
+}
