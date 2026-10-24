@@ -112,7 +112,7 @@
     ]}
     fields={[
       { key: 'name', label: 'Name', type: 'text', placeholder: 'germany exit', wide: true, help: 'A label you will recognise when picking it for a rule.' },
-      { key: 'target', label: 'Ping this address', type: 'text', mono: true, placeholder: '1.1.1.1 or 2606:4700:4700::1111', help: 'An IPv4 or IPv6 address that should always answer, ideally something beyond the exit (a public DNS server) so it proves the whole path works.' },
+      { key: 'target', label: 'Ping this address', type: 'text', mono: true, placeholder: '1.1.1.1 or 2606:4700:4700::1111', help: 'An IPv4 or IPv6 address that should always answer, ideally something beyond the exit (a public DNS server) so it proves the whole path works. Replies have to pass Linux\u2019s reverse-path filter, so the target needs a route on this machine (a default route is enough).' },
       { key: 'interface', label: 'Out of interface', type: 'iface', mono: true, placeholder: 'wgBridge0', help: 'The ping is sent out of this interface, so it tests that interface\u2019s own path, not whatever the main routing table would pick.' },
       { key: 'table', label: 'Routing table (optional)', type: 'text', placeholder: '200', help: 'Leave empty for a tunnel such as WireGuard; the ping goes straight into it. Only if the exit is reached through a gateway in a custom table, name that table so the ping uses its route.' },
       { key: 'interval_secs', label: 'Every (seconds)', type: 'number', help: 'How often to ping. 0 means the default, 5.' },

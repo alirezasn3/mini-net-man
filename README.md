@@ -73,6 +73,7 @@ Add a health check on the **Policy rules** page (name, address to ping, interfac
 - A check that hasn't been measured yet (just after a restart) counts as up, so a restart never switches rules off by itself; a dead exit is noticed within `fail_after` x `interval` seconds.
 - Ping something that should always answer and sits beyond the exit, such as `1.1.1.1`, so it proves the whole path rather than just the tunnel's first hop.
 - The ping is bound to the interface, so it goes out through it even if no route covers the target, which is what a WireGuard exit with `Table = off` needs. If an exit is reached through a **gateway** whose route is in a custom routing table, put that table in the check's *Routing table* field: mini-net-man then adds a helper rule `oif <interface> lookup <table>` (priority 1, shown as *generated*) that applies only to the check's own pings.
+- The reply has to get past Linux's reverse-path filter (`rp_filter`). In Ubuntu's default loose mode (2) that only needs the target to have *some* route on the machine, which a normal default route in the main table gives it. If a check times out although the exit clearly works, and `rp_filter` is 1 (strict) or the main table has no default route, set `net.ipv4.conf.<interface>.rp_filter=2` (or 0) on the exit interface.
 - IPv4 and IPv6 targets both work. A rule can't be saved if its check doesn't exist, and a check in use can't be deleted.
 
 ## IPv6

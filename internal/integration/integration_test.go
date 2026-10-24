@@ -949,6 +949,15 @@ func TestDefaultPolicyReject(t *testing.T) {
 	absent(t, "nft", sh(t, "nft list chain inet mini-net-man input"), "reject")
 }
 
+// noRPFilter turns off reverse-path filtering for the host side of a test
+// topology. Ubuntu-style kernels default to loose filtering (rp_filter=2),
+// which drops a reply whose source has no route back; these tests ping
+// addresses that deliberately have none, so they must not depend on the
+// machine's default.
+func noRPFilter(iface string) string {
+	return "sysctl -qw net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.default.rp_filter=0 net.ipv4.conf." + iface + ".rp_filter=0"
+}
+
 // ---- health checks -------------------------------------------------------------
 
 // A policy rule that depends on a ping check leaves the kernel when the pings
@@ -961,10 +970,11 @@ func TestHealthCheckSwitchesRule(t *testing.T) {
 	sh(t, `
 ip netns add peer
 ip link add va0 type veth peer name va1; ip link set va1 netns peer
+`+noRPFilter("va0")+`
 ip addr add 10.55.0.1/24 dev va0; ip link set va0 up
 ip netns exec peer sh -c 'ip link set lo up; ip addr add 10.55.0.2/24 dev va1; ip link set va1 up
   ip addr add 10.99.0.9/32 dev lo
-  sysctl -qw net.ipv4.conf.all.arp_ignore=1 net.ipv4.conf.va1.arp_ignore=1'
+  sysctl -qw net.ipv4.conf.all.arp_ignore=1 net.ipv4.conf.va1.arp_ignore=1 net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.va1.rp_filter=0'
 sleep 1`)
 	t.Cleanup(func() { try("ip netns del peer") })
 
@@ -1067,9 +1077,11 @@ func TestPingNeedsNoRouteOnATunnelLikeLink(t *testing.T) {
 	sh(t, `
 ip netns add peer
 ip link add va0 type veth peer name va1; ip link set va1 netns peer
+`+noRPFilter("va0")+`
 ip addr add 10.55.0.1/32 dev va0; ip link set va0 up
 ip netns exec peer sh -c 'ip link set lo up; ip addr add 10.55.0.2/32 dev va1; ip link set va1 up
-  ip addr add 10.99.0.9/32 dev lo; ip route add 10.55.0.1 dev va1'
+  ip addr add 10.99.0.9/32 dev lo; ip route add 10.55.0.1 dev va1
+  sysctl -qw net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.va1.rp_filter=0'
 sleep 1`)
 	t.Cleanup(func() { try("ip netns del peer") })
 
