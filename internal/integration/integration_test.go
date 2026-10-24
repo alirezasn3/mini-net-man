@@ -272,6 +272,71 @@ func TestSysctlForwarding(t *testing.T) {
 	contains(t, "v6", sh(t, "cat /proc/sys/net/ipv6/conf/all/forwarding"), "0")
 }
 
+// Tuning settings reach the real /proc/sys, are put back when something else
+// changes them, and a choice the kernel lacks (BBR on many container kernels) is
+// reported without blocking the rest. Only per-namespace keys are used, and any
+// value that turns out to be global is restored afterwards.
+func TestTuning(t *testing.T) {
+	read := func(key string) string {
+		return strings.TrimSpace(sh(t, "cat /proc/sys/"+strings.ReplaceAll(key, ".", "/")))
+	}
+	for _, key := range []string{"net.ipv4.tcp_congestion_control", "net.ipv4.tcp_mtu_probing", "net.ipv4.conf.all.rp_filter", "net.ipv4.conf.default.rp_filter"} {
+		key, orig := key, read(key)
+		t.Cleanup(func() { try("echo " + orig + " > /proc/sys/" + strings.ReplaceAll(key, ".", "/")) })
+	}
+
+	v := newEnv(t)
+	v.update(t, func(c *model.Config) {
+		c.Sysctl.Tuning = map[string]string{"tcp_mtu_probing": "1", "rp_filter": "2", "tcp_congestion_control": "reno"}
+	})
+	if got := read("net.ipv4.tcp_mtu_probing"); got != "1" {
+		t.Errorf("tcp_mtu_probing = %q, want 1", got)
+	}
+	for _, key := range []string{"net.ipv4.conf.all.rp_filter", "net.ipv4.conf.default.rp_filter"} {
+		if got := read(key); got != "2" {
+			t.Errorf("%s = %q, want 2", key, got)
+		}
+	}
+	if got := read("net.ipv4.tcp_congestion_control"); got != "reno" {
+		t.Errorf("congestion control = %q, want reno", got)
+	}
+
+	// Someone changes it behind our back: the next pass puts it back, and a
+	// second pass has nothing left to do.
+	sh(t, "echo 0 > /proc/sys/net/ipv4/tcp_mtu_probing")
+	if n := v.eng.Converge(); n == 0 {
+		t.Error("Converge changed nothing after the setting was altered")
+	}
+	if got := read("net.ipv4.tcp_mtu_probing"); got != "1" {
+		t.Errorf("tcp_mtu_probing = %q after Converge, want 1", got)
+	}
+	if n := v.eng.Converge(); n != 0 {
+		t.Errorf("second Converge made %d changes, want 0", n)
+	}
+
+	// BBR: set where the kernel has it, otherwise a clear per-setting issue.
+	issues, err := v.eng.Update(func(c *model.Config) error {
+		c.Sysctl.Tuning["tcp_congestion_control"] = "bbr"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if avail := read("net.ipv4.tcp_available_congestion_control"); strings.Contains(avail, "bbr") {
+		if len(issues) != 0 || read("net.ipv4.tcp_congestion_control") != "bbr" {
+			t.Errorf("bbr is available but wasn't set: issues=%+v", issues)
+		}
+	} else {
+		t.Logf("kernel without bbr (%s); issues: %+v", avail, issues)
+		if len(issues) == 0 {
+			t.Error("bbr unavailable but no issue reported")
+		}
+	}
+	if got := read("net.ipv4.tcp_mtu_probing"); got != "1" {
+		t.Errorf("one failing setting stopped the others: tcp_mtu_probing = %q", got)
+	}
+}
+
 // ---- client routing, link flaps, kill switch -------------------------------
 
 func TestClientRoutingFlap(t *testing.T) {

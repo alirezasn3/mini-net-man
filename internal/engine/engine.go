@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/alirezasn3/mini-net-man/internal/health"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
+	"github.com/alirezasn3/mini-net-man/internal/tuning"
 	"gopkg.in/yaml.v3"
 )
 
@@ -495,6 +497,40 @@ func (e *Engine) applyLocked(force bool) int {
 			err = fmt.Errorf("connection tracking is not active yet: add a NAT or connection-state firewall rule (%v)", err)
 		}
 		add("sysctl", "conntrack_acct", err)
+	}
+
+	// Managed kernel tuning. These come last because some only exist once the
+	// firewall above has loaded connection tracking.
+	ids := make([]string, 0, len(e.cfg.Sysctl.Tuning))
+	for id := range e.cfg.Sysctl.Tuning {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		st, ok := tuning.Get(id)
+		if !ok {
+			continue // a setting a newer version knew about
+		}
+		want := e.cfg.Sysctl.Tuning[id]
+		changed, err := false, error(nil)
+		for _, key := range st.Keys {
+			var cur string
+			if cur, err = e.k.Sysctl(key); err != nil {
+				break
+			}
+			if cur != want {
+				if err = e.k.SetSysctl(key, want); err != nil {
+					break
+				}
+				changed = true
+			}
+		}
+		switch {
+		case err != nil:
+			add("sysctl", id, fmt.Errorf("%s: %w", st.Label, err))
+		case changed:
+			muts++
+		}
 	}
 
 	e.issues = issues

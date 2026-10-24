@@ -9,6 +9,7 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 - **Client routing** (optional): send chosen clients out through a chosen interface. It only generates ordinary routes, rules and firewall entries, shown as *generated*.
 - **Ports**: which program is listening on which port (like `ss -tulnp`), and whether it is reachable from every interface or only this machine.
 - **Connections**: the kernel's connection-tracking table: every connection, including your VPN clients' traffic passing through. Each is labelled with its client, the exit interface and the NAT applied, and optionally bytes up and down. Filter by client, state or protocol.
+- **Tuning**: a curated set of kernel settings for a VPN gateway or router: BBR congestion control, queue discipline, socket buffers, MTU probing, connection-tracking size and timeouts, reverse-path filtering, ICMP redirects. Each has an explanation and a recommended value.
 - **Import**: adopts existing `ip rule`/`ip route`, `iptables-save`, ufw and iptables-persistent rules, and lists the ones it can't convert with the reason for each (a module with no equivalent, a jump to another chain, a negated match, ufw rate limiting, ...).
 - **Safe mode**: changes revert automatically unless you confirm, or if the browser disconnects.
 
@@ -75,6 +76,16 @@ Add a health check on the **Policy rules** page (name, address to ping, interfac
 - The ping is bound to the interface, so it goes out through it even if no route covers the target, which is what a WireGuard exit with `Table = off` needs. If an exit is reached through a **gateway** whose route is in a custom routing table, put that table in the check's *Routing table* field: mini-net-man then adds a helper rule `oif <interface> lookup <table>` (priority 1, shown as *generated*) that applies only to the check's own pings.
 - The reply has to get past Linux's reverse-path filter (`rp_filter`). In Ubuntu's default loose mode (2) that only needs the target to have *some* route on the machine, which a normal default route in the main table gives it. If a check times out although the exit clearly works, and `rp_filter` is 1 (strict) or the main table has no default route, set `net.ipv4.conf.<interface>.rp_filter=2` (or 0) on the exit interface.
 - IPv4 and IPv6 targets both work. A rule can't be saved if its check doesn't exist, and a check in use can't be deleted.
+
+## Kernel tuning
+
+The **Tuning** page lists settings that matter for a VPN or router box, each with what it does, the current value and a recommended one. They are `sysctl` values, saved under `sysctl.tuning` in the config.
+
+- A setting you **manage** is applied at boot and put back if something else changes it. One you don't manage is left exactly as the system has it. **Stop managing** does not undo the change: the value stays until the next reboot.
+- **BBR** (`tcp_congestion_control`) only speeds up connections that end on this machine (the panel, a proxy running here). Your clients' traffic that merely passes through is paced by its two ends. The `tcp_bbr` module is loaded for you; if the kernel doesn't have it, the page says so and the other settings still apply. It is usually paired with the `fq` queue discipline.
+- **Default queue discipline** only affects interfaces that come up after it is set; an existing interface keeps its queue until it is brought down and up.
+- A setting the system won't let it change (read-only `/proc/sys`, as inside some containers) is reported on the page instead of failing the rest.
+- Only the keys in the page's list can be read or written; the API doesn't accept arbitrary sysctls.
 
 ## IPv6
 

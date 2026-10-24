@@ -25,6 +25,9 @@ type Mock struct {
 	forward  [2]bool // v4, v6
 	acct     bool
 	pingFail map[string]bool
+	sysctls  map[string]string
+	missing  map[string]bool // keys this "kernel" doesn't have
+	noBBR    bool
 	watchers []chan struct{}
 }
 
@@ -362,6 +365,80 @@ func (m *Mock) Conntrack() (model.ConntrackInfo, []model.Conn, error) {
 	add(model.Conn{Family: "ipv4", Proto: "icmp", Src: "192.168.71.10", Dst: "192.168.71.1", Timeout: 28,
 		ReplySrc: "192.168.71.1", ReplyDst: "192.168.71.10"}, 84, 84)
 	return model.ConntrackInfo{Available: true, Count: len(conns) + 4_200, Max: 65_536, Acct: acct}, conns, nil
+}
+
+func (m *Mock) sysctlDefaults() map[string]string {
+	return map[string]string{
+		"net.ipv4.tcp_congestion_control": "cubic", "net.core.default_qdisc": "fq_codel",
+		"net.core.rmem_max": "212992", "net.core.wmem_max": "212992",
+		"net.ipv4.tcp_mtu_probing": "0", "net.ipv4.tcp_slow_start_after_idle": "1",
+		"net.netfilter.nf_conntrack_max": "65536", "net.netfilter.nf_conntrack_tcp_timeout_established": "432000",
+		"net.ipv4.conf.all.rp_filter": "2", "net.ipv4.conf.default.rp_filter": "2",
+		"net.ipv4.conf.all.accept_redirects": "1", "net.ipv4.conf.default.accept_redirects": "1",
+		"net.ipv6.conf.all.accept_redirects": "1", "net.ipv6.conf.default.accept_redirects": "1",
+		"net.ipv4.conf.all.send_redirects": "1", "net.ipv4.conf.default.send_redirects": "1",
+		"net.ipv4.conf.all.log_martians": "0", "net.ipv4.conf.default.log_martians": "0",
+	}
+}
+
+// SetKernelWithout removes a setting from the mock kernel, as a kernel built
+// without it, and SetBBRAvailable models a kernel that does or doesn't have BBR.
+func (m *Mock) SetKernelWithout(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.missing == nil {
+		m.missing = map[string]bool{}
+	}
+	m.missing[key] = true
+}
+
+func (m *Mock) SetBBRAvailable(ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.noBBR = !ok
+}
+
+func (m *Mock) Sysctl(key string) (string, error) {
+	if err := checkSysctlKey(key, false); err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.missing[key] {
+		return "", fmt.Errorf("this kernel doesn't have %s", key)
+	}
+	if key == "net.ipv4.tcp_available_congestion_control" {
+		if m.noBBR {
+			return "reno cubic", nil
+		}
+		return "reno cubic bbr", nil
+	}
+	if key == "net.core.available_qdisc" {
+		return "fq fq_codel cake pfifo_fast", nil
+	}
+	if m.sysctls == nil {
+		m.sysctls = m.sysctlDefaults()
+	}
+	return m.sysctls[key], nil
+}
+
+func (m *Mock) SetSysctl(key, value string) error {
+	if err := checkSysctlKey(key, true); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.missing[key] {
+		return fmt.Errorf("this kernel doesn't have %s", key)
+	}
+	if key == "net.ipv4.tcp_congestion_control" && value == "bbr" && m.noBBR {
+		return errors.New("bbr isn't available in this kernel (it offers: reno, cubic) and its tcp_bbr module could not be loaded")
+	}
+	if m.sysctls == nil {
+		m.sysctls = m.sysctlDefaults()
+	}
+	m.sysctls[key] = value
+	return nil
 }
 
 // SetPingFail makes pings out of iface time out (true) or work again (false).

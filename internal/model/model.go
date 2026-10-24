@@ -53,6 +53,10 @@ type Sysctl struct {
 	// ConntrackAcct makes the kernel count bytes and packets per tracked
 	// connection (net.netfilter.nf_conntrack_acct); the Connections page shows them.
 	ConntrackAcct *bool `yaml:"conntrack_acct,omitempty" json:"conntrack_acct"`
+	// Tuning maps a setting from the tuning catalogue (internal/tuning) to the
+	// value to keep. Only settings listed here are managed; the rest are left
+	// as the system has them.
+	Tuning map[string]string `yaml:"tuning,omitempty" json:"tuning"`
 }
 
 // Address is an extra address (IPv4 or IPv6) added to an interface (like `ip addr add`).

@@ -507,3 +507,123 @@ func TestCheckHelperRuleFamilyAndDedupe(t *testing.T) {
 		}
 	}
 }
+
+func sysctl(t *testing.T, k *kernel.Mock, key string) string {
+	t.Helper()
+	v, err := k.Sysctl(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func TestTuningIsAppliedAndKept(t *testing.T) {
+	e, k := newTest(t)
+	is := mustUpdate(t, e, func(c *model.Config) error {
+		c.Sysctl.Tuning = map[string]string{
+			"tcp_congestion_control": "bbr",
+			"socket_buffer_max":      "16777216", // one setting, two sysctls
+			"rp_filter":              "2",
+			"tcp_mtu_probing":        "1",
+		}
+		return nil
+	})
+	if len(is) != 0 {
+		t.Fatalf("issues: %+v", is)
+	}
+	for key, want := range map[string]string{
+		"net.ipv4.tcp_congestion_control":    "bbr",
+		"net.core.rmem_max":                  "16777216",
+		"net.core.wmem_max":                  "16777216",
+		"net.ipv4.conf.all.rp_filter":        "2",
+		"net.ipv4.conf.default.rp_filter":    "2",
+		"net.ipv4.tcp_mtu_probing":           "1",
+		"net.ipv4.tcp_slow_start_after_idle": "1", // not managed: untouched
+	} {
+		if got := sysctl(t, k, key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+	if n := e.Converge(); n != 0 {
+		t.Errorf("not idempotent: %d changes on the second pass", n)
+	}
+
+	// Something else changes a managed setting behind our back: the next
+	// reconcile puts it back, as for forwarding.
+	_ = k.SetSysctl("net.ipv4.tcp_mtu_probing", "0")
+	if n := e.Converge(); n != 1 {
+		t.Errorf("drift not corrected: %d changes", n)
+	}
+	if got := sysctl(t, k, "net.ipv4.tcp_mtu_probing"); got != "1" {
+		t.Errorf("tcp_mtu_probing = %q after reconcile", got)
+	}
+
+	// Stop managing one: it is left as it is, not reverted.
+	mustUpdate(t, e, func(c *model.Config) error { delete(c.Sysctl.Tuning, "tcp_mtu_probing"); return nil })
+	_ = k.SetSysctl("net.ipv4.tcp_mtu_probing", "2")
+	e.Converge()
+	if got := sysctl(t, k, "net.ipv4.tcp_mtu_probing"); got != "2" {
+		t.Errorf("an unmanaged setting was touched: %q", got)
+	}
+}
+
+func TestTuningRejectsBadValuesAndUnknownSettings(t *testing.T) {
+	e, _ := newTest(t)
+	for _, bad := range []map[string]string{
+		{"tcp_congestion_control": "westwood"},
+		{"tcp_mtu_probing": "7"},
+		{"socket_buffer_max": "5"},
+		{"not_a_setting": "1"},
+	} {
+		if _, err := e.Update(func(c *model.Config) error { c.Sysctl.Tuning = bad; return nil }); err == nil {
+			t.Errorf("%v should be rejected", bad)
+		}
+	}
+	if len(e.Config().Sysctl.Tuning) != 0 {
+		t.Error("a rejected change must not be saved")
+	}
+}
+
+// BBR missing from the kernel, and a setting the kernel doesn't have at all,
+// show up as issues with the reason, without blocking the other settings.
+func TestTuningFailuresAreReportedPerSetting(t *testing.T) {
+	e, k := newTest(t)
+	k.SetBBRAvailable(false)
+	k.SetKernelWithout("net.core.default_qdisc")
+	is := mustUpdate(t, e, func(c *model.Config) error {
+		c.Sysctl.Tuning = map[string]string{"tcp_congestion_control": "bbr", "default_qdisc": "fq", "tcp_mtu_probing": "1"}
+		return nil
+	})
+	byID := map[string]string{}
+	for _, i := range is {
+		byID[i.ID] = i.Message
+	}
+	if !strings.Contains(byID["tcp_congestion_control"], "bbr isn't available in this kernel") {
+		t.Errorf("bbr issue = %q", byID["tcp_congestion_control"])
+	}
+	if !strings.Contains(byID["default_qdisc"], "this kernel doesn't have net.core.default_qdisc") {
+		t.Errorf("qdisc issue = %q", byID["default_qdisc"])
+	}
+	if len(is) != 2 {
+		t.Errorf("want exactly the two failures, got %+v", is)
+	}
+	if got := sysctl(t, k, "net.ipv4.tcp_mtu_probing"); got != "1" {
+		t.Errorf("a working setting must still apply: %q", got)
+	}
+
+	// Once the kernel can do it, the retry loop picks it up without a restart.
+	k.SetBBRAvailable(true)
+	e.Converge()
+	if got := sysctl(t, k, "net.ipv4.tcp_congestion_control"); got != "bbr" {
+		t.Errorf("bbr not applied after it became available: %q", got)
+	}
+}
+
+func TestKernelRefusesUnlistedSysctls(t *testing.T) {
+	k := kernel.NewMock()
+	for _, key := range []string{"kernel.core_pattern", "net.ipv4.ip_forward", "../etc/passwd", "net.ipv4.tcp_mtu_probing; reboot", ""} {
+		if err := k.SetSysctl(key, "1"); err == nil {
+			t.Errorf("writing %q must be refused", key)
+		}
+	}
+}

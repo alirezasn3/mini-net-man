@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/alirezasn3/mini-net-man/internal/tuning"
 )
 
 var tableNames = map[string]int{"default": TableDefault, "main": TableMain, "local": TableLocal}
@@ -368,6 +371,16 @@ func (c *Config) Validate() error {
 		}
 		if err := r.Validate(); err != nil {
 			return fmt.Errorf("rule %d: %w", r.Priority, err)
+		}
+	}
+	ids := make([]string, 0, len(c.Sysctl.Tuning))
+	for id := range c.Sysctl.Tuning {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if err := tuning.Validate(id, c.Sysctl.Tuning[id]); err != nil {
+			return err
 		}
 	}
 	checkIDs := map[string]bool{}

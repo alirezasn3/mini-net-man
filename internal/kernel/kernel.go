@@ -73,6 +73,13 @@ type Kernel interface {
 	// for the matching reply. The error says why there wasn't one.
 	Ping(ctx context.Context, iface, target string, timeout time.Duration) (time.Duration, error)
 
+	// Sysctl reads, and SetSysctl writes, a kernel setting such as
+	// "net.ipv4.tcp_mtu_probing". Only keys from the tuning catalogue (or
+	// read-only helpers like the list of available congestion controls) are
+	// accepted. Errors say in plain words why, e.g. that the kernel lacks it.
+	Sysctl(key string) (string, error)
+	SetSysctl(key, value string) error
+
 	// Sockets lists listening TCP and bound UDP sockets with the process
 	// that owns each, like `ss -tulnp`.
 	Sockets() ([]model.Socket, error)

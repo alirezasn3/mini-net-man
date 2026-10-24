@@ -161,6 +161,9 @@ func (s *Server) Handler() http.Handler {
 	})
 	authed.HandleFunc("PUT /api/settings/web", s.putWebSettings)
 
+	authed.HandleFunc("GET /api/tuning", s.tuningList)
+	authed.HandleFunc("PUT /api/tuning/{id}", s.tuningSet)
+
 	authed.HandleFunc("GET /api/update", s.updateStatus)
 	authed.HandleFunc("POST /api/update/install", s.updateInstall)
 
@@ -180,6 +183,16 @@ func (s *Server) Handler() http.Handler {
 				return
 			}
 			m.SetPingFail(in.Interface, in.Fail)
+			writeJSON(w, map[string]bool{"ok": true})
+		})
+		authed.HandleFunc("POST /api/mock/bbr", func(w http.ResponseWriter, r *http.Request) {
+			var in struct {
+				Available bool `json:"available"`
+			}
+			if !decode(w, r, &in) {
+				return
+			}
+			m.SetBBRAvailable(in.Available)
 			writeJSON(w, map[string]bool{"ok": true})
 		})
 	}
