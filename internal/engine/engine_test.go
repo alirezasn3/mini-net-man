@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alirezasn3/mini-net-man/internal/health"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
 )
@@ -315,6 +316,16 @@ func fast(t *testing.T) {
 	t.Cleanup(func() { debounceDelay, retryMin, retryMax, tickEvery, stormWindow, stormPause = d, r, m, tk, w, p })
 }
 
+// runEngine starts the reconcile loop and, at the end of the test, stops it and
+// waits until it has, so the next test can change the loop's timing safely.
+func runEngine(t *testing.T, e *Engine) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+}
+
 func routeApplied(k *kernel.Mock, dev string) bool {
 	routes, _ := k.ListRoutes()
 	for _, r := range routes {
@@ -340,9 +351,7 @@ func eventually(t *testing.T, what string, ok func() bool) {
 func TestFailedRoutesAreRetriedWithoutEvents(t *testing.T) {
 	fast(t)
 	e, k := newTest(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go e.Run(ctx)
+	runEngine(t, e)
 
 	is := mustUpdate(t, e, func(c *model.Config) error {
 		c.Routes = []model.Route{{ID: "r", Dst: "default", Dev: "wgLate0", Table: "200"}}
@@ -362,9 +371,7 @@ func TestFailedRoutesAreRetriedWithoutEvents(t *testing.T) {
 func TestEventBurstWithFailingRouteDoesNotStopReconciling(t *testing.T) {
 	fast(t)
 	e, k := newTest(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go e.Run(ctx)
+	runEngine(t, e)
 	mustUpdate(t, e, func(c *model.Config) error {
 		c.Routes = []model.Route{{ID: "r", Dst: "default", Dev: "wgLate0", Table: "200"}}
 		return nil
@@ -375,4 +382,128 @@ func TestEventBurstWithFailingRouteDoesNotStopReconciling(t *testing.T) {
 	}
 	k.AddLink("wgLate0", true)
 	eventually(t, "the route after the burst", func() bool { return routeApplied(k, "wgLate0") })
+}
+
+func ownedRuleAt(k *kernel.Mock, priority int) bool {
+	rules, _ := k.ListRules()
+	for _, r := range rules {
+		if r.Owned && r.Priority == priority {
+			return true
+		}
+	}
+	return false
+}
+
+// A policy rule that depends on a health check is in the kernel while the
+// check passes, leaves when pings start timing out, and returns on recovery.
+func TestConditionalRuleFollowsItsCheck(t *testing.T) {
+	defer health.SetUnitsForTest(10*time.Millisecond, 100*time.Microsecond)()
+	e, k := newTest(t)
+	mustUpdate(t, e, func(c *model.Config) error {
+		c.Checks = []model.Check{{ID: "ck", Name: "germany exit", Target: "1.1.1.1", Interface: "wgBridge0", Table: "200",
+			IntervalSecs: 1, TimeoutMs: 1000, FailAfter: 2, RecoverAfter: 2}}
+		c.Rules = []model.Rule{
+			{ID: "guarded", Priority: 300, Src: "10.0.0.0/16", Action: "lookup", Table: "200", Check: "ck"},
+			{ID: "always", Priority: 400, Src: "10.9.0.0/16", Action: "lookup", Table: "main"},
+		}
+		return nil
+	})
+	if !ownedRuleAt(k, 300) {
+		t.Fatal("a check that has not been measured yet must not switch its rule off")
+	}
+	eventually(t, "the check to be up", func() bool { return e.CheckStatuses()["ck"].State == health.Up })
+	if !ownedRuleAt(k, 1) {
+		t.Error("the helper rule that lets the ping reach table 200 is missing")
+	}
+
+	k.SetPingFail("wgBridge0", true)
+	eventually(t, "the rule to leave the kernel", func() bool { return !ownedRuleAt(k, 300) })
+	if st := e.CheckStatuses()["ck"]; st.State != health.Down {
+		t.Errorf("status = %+v", st)
+	}
+	if !ownedRuleAt(k, 400) {
+		t.Error("an unconditional rule must be unaffected")
+	}
+	if !ownedRuleAt(k, 1) {
+		t.Error("the helper rule has to stay so the check can notice the recovery")
+	}
+	if got := e.Config().Rules[0]; got.Disabled || got.Check != "ck" {
+		t.Errorf("a failing check must not edit the configured rule: %+v", got)
+	}
+
+	k.SetPingFail("wgBridge0", false)
+	eventually(t, "the rule to come back", func() bool { return ownedRuleAt(k, 300) })
+	if n := e.Converge(); n != 0 {
+		t.Errorf("not idempotent after the switch back: %d changes", n)
+	}
+}
+
+func TestRuleCannotDependOnMissingCheck(t *testing.T) {
+	e, _ := newTest(t)
+	if _, err := e.Update(func(c *model.Config) error {
+		c.Rules = []model.Rule{{ID: "r", Priority: 300, Src: "10.0.0.0/16", Action: "lookup", Table: "200", Check: "nope"}}
+		return nil
+	}); err == nil {
+		t.Fatal("a rule that names a check that does not exist should be rejected")
+	}
+	mustUpdate(t, e, func(c *model.Config) error {
+		c.Checks = []model.Check{{ID: "ck", Name: "x", Target: "1.1.1.1", Interface: "wgBridge0"}}
+		c.Rules = []model.Rule{{ID: "r", Priority: 300, Src: "10.0.0.0/16", Action: "lookup", Table: "200", Check: "ck"}}
+		return nil
+	})
+	if _, err := e.Update(func(c *model.Config) error { c.Checks = nil; return nil }); err == nil {
+		t.Error("deleting a check that a rule still uses should be rejected")
+	}
+}
+
+func TestCheckValidation(t *testing.T) {
+	bad := []model.Check{
+		{ID: "1", Name: "", Target: "1.1.1.1", Interface: "wg0"},
+		{ID: "2", Name: "x", Target: "example.com", Interface: "wg0"},
+		{ID: "3", Name: "x", Target: "1.1.1.1"},
+		{ID: "4", Name: "x", Target: "1.1.1.1", Interface: "wg0", IntervalSecs: 1, TimeoutMs: 5000},
+		{ID: "5", Name: "x", Target: "1.1.1.1", Interface: "wg0", Table: "nope"},
+		{ID: "6", Name: "x", Target: "1.1.1.1", Interface: "wg0", FailAfter: 500},
+	}
+	for _, c := range bad {
+		if err := c.Validate(); err == nil {
+			t.Errorf("check %+v should be rejected", c)
+		}
+	}
+	ok := model.Check{ID: "ok", Name: "x", Target: "2606:4700:4700::1111", Interface: "wg0", Table: "200"}
+	if err := ok.Validate(); err != nil || !ok.V6() || ok.Interval() != 5 || ok.Fails() != 3 || ok.Recovers() != 2 || ok.Timeout() != 1000 {
+		t.Errorf("defaults/validate: %v %+v", err, ok)
+	}
+}
+
+func TestCheckHelperRuleFamilyAndDedupe(t *testing.T) {
+	e, k := newTest(t)
+	mustUpdate(t, e, func(c *model.Config) error {
+		c.Checks = []model.Check{
+			{ID: "a", Name: "a", Target: "1.1.1.1", Interface: "wgBridge0", Table: "200"},
+			{ID: "b", Name: "b", Target: "8.8.8.8", Interface: "wgBridge0", Table: "200"},              // same interface+table+family: one helper
+			{ID: "c", Name: "c", Target: "2606:4700:4700::1111", Interface: "wgBridge0", Table: "200"}, // IPv6: its own helper
+			{ID: "d", Name: "d", Target: "9.9.9.9", Interface: "wgBridge1"},                            // no table: no helper
+		}
+		return nil
+	})
+	rules, _ := k.ListRules()
+	v4, v6 := 0, 0
+	for _, r := range rules {
+		if r.Owned && r.Priority == 1 && r.Oif == "wgBridge0" {
+			if r.V6() {
+				v6++
+			} else {
+				v4++
+			}
+		}
+	}
+	if v4 != 1 || v6 != 1 {
+		t.Errorf("helper rules: %d IPv4, %d IPv6; want one of each", v4, v6)
+	}
+	for _, r := range rules {
+		if r.Owned && r.Oif == "wgBridge1" {
+			t.Errorf("a check without a table must not create a helper rule: %+v", r)
+		}
+	}
 }

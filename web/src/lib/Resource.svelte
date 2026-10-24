@@ -12,6 +12,7 @@
     orderable = false,
     sort = null,
     generated = [],
+    rowBadge = null, // (item) => { text, cls, title } | null: a status chip beside the first column
     defaults = [], // rows for each chain's default action: editable, but not deletable or movable
     defaultOptions = [],
     ondefault = () => {},
@@ -102,8 +103,12 @@
               <td class="td max-sm:flex max-sm:px-0 max-sm:py-0.5 {long ? 'max-sm:flex-col max-sm:gap-0.5' : 'max-sm:justify-between max-sm:gap-4'} {col.mono ? 'mono' : ''} {ci > 0 && (v === '' || v == null) ? 'max-sm:hidden' : ''}">
                 <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{col.label}</span>
                 <span class="min-w-0 break-words {long ? 'max-sm:text-left' : 'max-sm:text-right'}">
-                  {v}
+                  {#if col.badge}<span class="badge {col.badge(item)}">{v}</span>{:else}{v}{/if}
                   {#if ci === 0 && item.disabled}<span class="badge ml-2 bg-slate-800 text-slate-400">disabled</span>{/if}
+                  {#if ci === 0 && rowBadge}
+                    {@const b = rowBadge(item)}
+                    {#if b}<span class="badge ml-2 {b.cls}" title={b.title}>{b.text}</span>{/if}
+                  {/if}
                 </span>
               </td>
             {/each}

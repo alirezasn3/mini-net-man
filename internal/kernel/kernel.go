@@ -5,6 +5,7 @@ package kernel
 
 import (
 	"context"
+	"time"
 
 	"github.com/alirezasn3/mini-net-man/internal/model"
 )
@@ -67,6 +68,10 @@ type Kernel interface {
 	Conntrack() (model.ConntrackInfo, []model.Conn, error)
 	ConntrackAcct() (bool, error)
 	SetConntrackAcct(on bool) error
+
+	// Ping sends one ICMP echo to target out of the named interface and waits
+	// for the matching reply. The error says why there wasn't one.
+	Ping(ctx context.Context, iface, target string, timeout time.Duration) (time.Duration, error)
 
 	// Sockets lists listening TCP and bound UDP sockets with the process
 	// that owns each, like `ss -tulnp`.

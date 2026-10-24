@@ -370,6 +370,21 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("rule %d: %w", r.Priority, err)
 		}
 	}
+	checkIDs := map[string]bool{}
+	for _, ck := range c.Checks {
+		if err := check("health check", ck.ID); err != nil {
+			return err
+		}
+		if err := ck.Validate(); err != nil {
+			return fmt.Errorf("health check %q: %w", ck.Name, err)
+		}
+		checkIDs[ck.ID] = true
+	}
+	for _, r := range c.Rules {
+		if r.Check != "" && !checkIDs[r.Check] {
+			return fmt.Errorf("rule %d depends on a health check that doesn't exist", r.Priority)
+		}
+	}
 	for _, r := range c.Firewall.Rules {
 		if err := check("firewall rule", r.ID); err != nil {
 			return err
@@ -398,6 +413,60 @@ func (c *Config) Validate() error {
 		if cl.In == "" || cl.Out == "" || !validIface(cl.In) || !validIface(cl.Out) {
 			return fmt.Errorf("client %s: in and out interfaces are required", cl.Name)
 		}
+	}
+	return nil
+}
+
+// Defaults for a health check's timing; units are seconds and milliseconds.
+const (
+	DefaultCheckInterval = 5
+	DefaultCheckTimeout  = 1000
+	DefaultFailAfter     = 3
+	DefaultRecoverAfter  = 2
+)
+
+func orDefault(v, d int) int {
+	if v == 0 {
+		return d
+	}
+	return v
+}
+
+// Interval, Timeout, Fails and Recovers return the check's settings with defaults applied.
+func (c Check) Interval() int { return orDefault(c.IntervalSecs, DefaultCheckInterval) }
+func (c Check) Timeout() int  { return orDefault(c.TimeoutMs, DefaultCheckTimeout) }
+func (c Check) Fails() int    { return orDefault(c.FailAfter, DefaultFailAfter) }
+func (c Check) Recovers() int { return orDefault(c.RecoverAfter, DefaultRecoverAfter) }
+
+// V6 reports whether the target is an IPv6 address.
+func (c Check) V6() bool { return strings.Contains(c.Target, ":") }
+
+func (c Check) Validate() error {
+	if strings.TrimSpace(c.Name) == "" {
+		return fmt.Errorf("a name is required")
+	}
+	if net.ParseIP(strings.TrimSpace(c.Target)) == nil {
+		return fmt.Errorf("target must be an IPv4 or IPv6 address, got %q", c.Target)
+	}
+	if c.Interface == "" || !validIface(c.Interface) {
+		return fmt.Errorf("an interface is required")
+	}
+	if c.Table != "" {
+		if _, err := ParseTable(c.Table); err != nil {
+			return err
+		}
+	}
+	if v := c.Interval(); v < 1 || v > 3600 {
+		return fmt.Errorf("interval must be between 1 and 3600 seconds")
+	}
+	if v := c.Timeout(); v < 100 || v > 30000 {
+		return fmt.Errorf("timeout must be between 100 and 30000 ms")
+	}
+	if c.Timeout() > c.Interval()*1000 {
+		return fmt.Errorf("the timeout (%d ms) can't be longer than the interval (%d s)", c.Timeout(), c.Interval())
+	}
+	if c.Fails() < 1 || c.Fails() > 100 || c.Recovers() < 1 || c.Recovers() > 100 {
+		return fmt.Errorf("fail-after and recover-after must be between 1 and 100")
 	}
 	return nil
 }

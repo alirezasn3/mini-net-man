@@ -18,6 +18,7 @@ import (
 
 	"github.com/alirezasn3/mini-net-man/internal/conns"
 	"github.com/alirezasn3/mini-net-man/internal/engine"
+	"github.com/alirezasn3/mini-net-man/internal/health"
 	"github.com/alirezasn3/mini-net-man/internal/importer"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
@@ -946,4 +947,136 @@ func TestDefaultPolicyReject(t *testing.T) {
 		t.Error("9000 should be reachable again under an accept default")
 	}
 	absent(t, "nft", sh(t, "nft list chain inet mini-net-man input"), "reject")
+}
+
+// ---- health checks -------------------------------------------------------------
+
+// A policy rule that depends on a ping check leaves the kernel when the pings
+// stop being answered and returns when they are. The target is reachable only
+// through a gateway in a custom routing table, as with an exit that isn't a
+// tunnel, so this also proves the check can find that route.
+func TestHealthCheckSwitchesRule(t *testing.T) {
+	defer health.SetUnitsForTest(100*time.Millisecond, time.Millisecond)() // 1 "second" = 100 ms
+	v := newEnv(t)
+	sh(t, `
+ip netns add peer
+ip link add va0 type veth peer name va1; ip link set va1 netns peer
+ip addr add 10.55.0.1/24 dev va0; ip link set va0 up
+ip netns exec peer sh -c 'ip link set lo up; ip addr add 10.55.0.2/24 dev va1; ip link set va1 up
+  ip addr add 10.99.0.9/32 dev lo
+  sysctl -qw net.ipv4.conf.all.arp_ignore=1 net.ipv4.conf.va1.arp_ignore=1'
+sleep 1`)
+	t.Cleanup(func() { try("ip netns del peer") })
+
+	// The peer is a gateway: it will not answer ARP for the target itself (so the
+	// "assume it's on the link" shortcut can't work), but takes packets sent to it
+	// as the next hop. Only the route in table 200 gets a ping through.
+	sh(t, "ip route add default via 10.55.0.2 dev va0 table 200")
+	if _, err := v.k.Ping(context.Background(), "va0", "10.99.0.9", 400*time.Millisecond); err == nil {
+		t.Fatal("expected the ping to fail without a rule pointing at table 200")
+	}
+	sh(t, "ip route del default via 10.55.0.2 dev va0 table 200")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go v.eng.Run(ctx)
+	v.update(t, func(c *model.Config) {
+		c.Routes = []model.Route{{ID: "r", Dst: "default", Gateway: "10.55.0.2", Dev: "va0", Table: "200"}}
+		c.Checks = []model.Check{{ID: "ck", Name: "exit", Target: "10.99.0.9", Interface: "va0", Table: "200",
+			IntervalSecs: 1, TimeoutMs: 300, FailAfter: 2, RecoverAfter: 2}}
+		c.Rules = []model.Rule{{ID: "guarded", Priority: 300, Src: "10.77.0.0/16", Action: "lookup", Table: "200", Check: "ck"}}
+	})
+	hasRule := func() bool {
+		out, _ := try("ip rule show")
+		return strings.Contains(out, "from 10.77.0.0/16 lookup 200")
+	}
+	state := func() string { return v.eng.CheckStatuses()["ck"].State }
+
+	waitFor(t, 5*time.Second, "the check to see the target through table 200", func() bool { return state() == health.Up })
+	contains(t, "helper rule", sh(t, "ip rule show"), "1:\tfrom all oif va0 lookup 200")
+	if !hasRule() {
+		t.Fatal("the guarded rule should be in the kernel while the check is up")
+	}
+	if rtt := v.eng.CheckStatuses()["ck"].RTTMs; rtt <= 0 {
+		t.Errorf("no round-trip time recorded: %v", rtt)
+	}
+
+	// The exit stops answering.
+	sh(t, "ip netns exec peer ip link set va1 down")
+	waitFor(t, 8*time.Second, "the rule to be switched off", func() bool { return !hasRule() })
+	if state() != health.Down {
+		t.Errorf("state = %q, want down (%+v)", state(), v.eng.CheckStatuses()["ck"])
+	}
+	contains(t, "helper rule stays", sh(t, "ip rule show"), "oif va0 lookup 200")
+	if got := v.eng.Config().Rules[0]; got.Disabled {
+		t.Error("the configured rule must not be edited by a failing check")
+	}
+
+	// It answers again.
+	sh(t, "ip netns exec peer ip link set va1 up")
+	waitFor(t, 8*time.Second, "the rule to come back", hasRule)
+	waitFor(t, 3*time.Second, "state up", func() bool { return state() == health.Up })
+	if n := v.eng.Converge(); n != 0 {
+		t.Errorf("not idempotent: %d changes", n)
+	}
+
+	// Removing the check's rule dependency cleans up the helper too.
+	v.update(t, func(c *model.Config) { c.Rules, c.Checks = nil, nil })
+	out, _ := try("ip rule show")
+	absent(t, "ip rule", out, "oif va0", "10.77.0.0/16")
+}
+
+// IPv6 targets are pinged over ICMPv6 out of the named interface.
+func TestPingIPv6AndErrors(t *testing.T) {
+	topology(t)
+	sh(t, `
+ip netns add peer
+ip link add va0 type veth peer name va1; ip link set va1 netns peer
+ip addr add fd55::1/64 dev va0 nodad; ip link set va0 up
+ip netns exec peer sh -c 'ip link set lo up; ip addr add fd55::2/64 dev va1 nodad; ip link set va1 up'
+ip addr add 10.55.0.1/24 dev va0
+ip netns exec peer ip addr add 10.55.0.2/24 dev va1
+sleep 1`)
+	t.Cleanup(func() { try("ip netns del peer") })
+	k := kernel.NewLinux()
+	ctx := context.Background()
+
+	if rtt, err := k.Ping(ctx, "va0", "fd55::2", time.Second); err != nil || rtt <= 0 {
+		t.Errorf("ipv6 ping: rtt=%v err=%v", rtt, err)
+	}
+	if rtt, err := k.Ping(ctx, "va0", "10.55.0.2", time.Second); err != nil || rtt <= 0 {
+		t.Errorf("ipv4 ping: rtt=%v err=%v", rtt, err)
+	}
+	if _, err := k.Ping(ctx, "va0", "10.55.0.77", 300*time.Millisecond); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("an address nobody answers should time out, got %v", err)
+	}
+	if _, err := k.Ping(ctx, "nosuch0", "10.55.0.2", 300*time.Millisecond); err == nil {
+		t.Error("an interface that doesn't exist should be an error")
+	}
+	if _, err := k.Ping(ctx, "va0", "not-an-ip", time.Second); err == nil {
+		t.Error("a hostname isn't accepted")
+	}
+}
+
+// A ping bound to an interface leaves through it even when no route covers the
+// target (Linux treats the target as on that link). That is what lets a check
+// work on a tunnel exit, such as WireGuard with `Table = off`, with no table
+// configured at all.
+func TestPingNeedsNoRouteOnATunnelLikeLink(t *testing.T) {
+	topology(t)
+	sh(t, `
+ip netns add peer
+ip link add va0 type veth peer name va1; ip link set va1 netns peer
+ip addr add 10.55.0.1/32 dev va0; ip link set va0 up
+ip netns exec peer sh -c 'ip link set lo up; ip addr add 10.55.0.2/32 dev va1; ip link set va1 up
+  ip addr add 10.99.0.9/32 dev lo; ip route add 10.55.0.1 dev va1'
+sleep 1`)
+	t.Cleanup(func() { try("ip netns del peer") })
+
+	if out, err := try("ip route get 10.99.0.9"); err == nil {
+		t.Fatalf("precondition: the host must have no route to the target, but has: %s", out)
+	}
+	if rtt, err := kernel.NewLinux().Ping(context.Background(), "va0", "10.99.0.9", time.Second); err != nil || rtt <= 0 {
+		t.Errorf("a bound ping should reach the target with no route: rtt=%v err=%v", rtt, err)
+	}
 }

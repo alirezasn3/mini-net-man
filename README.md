@@ -5,6 +5,7 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 - **Interfaces & addresses**: see interfaces, add extra IPs.
 - **Routes** and **policy rules**: `ip route … table N` and `ip rule … priority N`, created by hand.
 - **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically. Each chain's default action (accept, drop or reject) is the last row of the rule list and editable there.
+- **Health checks**: ping an address out of an interface, and make policy rules depend on the result. A rule is switched off while its check fails (say, an exit tunnel that has silently died) and back on when it recovers.
 - **Client routing** (optional): send chosen clients out through a chosen interface. It only generates ordinary routes, rules and firewall entries, shown as *generated*.
 - **Ports**: which program is listening on which port (like `ss -tulnp`), and whether it is reachable from every interface or only this machine.
 - **Connections**: the kernel's connection-tracking table: every connection, including your VPN clients' traffic passing through. Each is labelled with its client, the exit interface and the NAT applied, and optionally bytes up and down. Filter by client, state or protocol.
@@ -63,6 +64,16 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 A tag with a dash (`v1.0.0-rc1`) is published as a pre-release and is not offered as the latest. `make linux VERSION=v0.1.0` builds the same binaries locally. The repository defaults to `alirezasn3/mini-net-man`; change `DefaultRepo` in `internal/update/update.go` if yours differs.
+
+## Conditional rules (health checks)
+
+Add a health check on the **Policy rules** page (name, address to ping, interface to ping out of), then pick it under a rule's **Condition**. The check sends one ICMP echo out of that interface every few seconds. After `fail_after` misses in a row (default 3) it is *down* and every rule that depends on it is taken out of the kernel, so traffic falls through to the next rule, for instance back to the main table. After `recover_after` replies in a row (default 2) it is *up* again and the rules return. A single lost ping changes nothing.
+
+- The configured rule is never edited; it just isn't in the kernel while the check is down. The rule list shows an **off: check failing** chip.
+- A check that hasn't been measured yet (just after a restart) counts as up, so a restart never switches rules off by itself; a dead exit is noticed within `fail_after` x `interval` seconds.
+- Ping something that should always answer and sits beyond the exit, such as `1.1.1.1`, so it proves the whole path rather than just the tunnel's first hop.
+- The ping is bound to the interface, so it goes out through it even if no route covers the target, which is what a WireGuard exit with `Table = off` needs. If an exit is reached through a **gateway** whose route is in a custom routing table, put that table in the check's *Routing table* field: mini-net-man then adds a helper rule `oif <interface> lookup <table>` (priority 1, shown as *generated*) that applies only to the check's own pings.
+- IPv4 and IPv6 targets both work. A rule can't be saved if its check doesn't exist, and a check in use can't be deleted.
 
 ## IPv6
 

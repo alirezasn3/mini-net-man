@@ -2,10 +2,12 @@ package kernel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/alirezasn3/mini-net-man/internal/model"
 )
@@ -22,6 +24,7 @@ type Mock struct {
 	fw       *model.Firewall
 	forward  [2]bool // v4, v6
 	acct     bool
+	pingFail map[string]bool
 	watchers []chan struct{}
 }
 
@@ -359,6 +362,33 @@ func (m *Mock) Conntrack() (model.ConntrackInfo, []model.Conn, error) {
 	add(model.Conn{Family: "ipv4", Proto: "icmp", Src: "192.168.71.10", Dst: "192.168.71.1", Timeout: 28,
 		ReplySrc: "192.168.71.1", ReplyDst: "192.168.71.10"}, 84, 84)
 	return model.ConntrackInfo{Available: true, Count: len(conns) + 4_200, Max: 65_536, Acct: acct}, conns, nil
+}
+
+// SetPingFail makes pings out of iface time out (true) or work again (false).
+func (m *Mock) SetPingFail(iface string, fail bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pingFail == nil {
+		m.pingFail = map[string]bool{}
+	}
+	m.pingFail[iface] = fail
+}
+
+// Ping answers in 12 ms unless the interface is missing, down, or told to fail.
+func (m *Mock) Ping(ctx context.Context, iface, target string, timeout time.Duration) (time.Duration, error) {
+	m.mu.Lock()
+	l := m.link(iface)
+	fail := m.pingFail[iface]
+	m.mu.Unlock()
+	switch {
+	case l == nil:
+		return 0, fmt.Errorf("no such interface %q", iface)
+	case !l.Up:
+		return 0, fmt.Errorf("interface %q is down", iface)
+	case fail:
+		return 0, errors.New("timed out")
+	}
+	return 12 * time.Millisecond, nil
 }
 
 // Sockets returns a believable listener list, including this very process.

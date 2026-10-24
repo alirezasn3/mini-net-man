@@ -17,6 +17,7 @@ type Config struct {
 	Addresses     []Address     `yaml:"addresses" json:"addresses"`
 	Routes        []Route       `yaml:"routes" json:"routes"`
 	Rules         []Rule        `yaml:"rules" json:"rules"`
+	Checks        []Check       `yaml:"checks" json:"checks"`
 	Firewall      Firewall      `yaml:"firewall" json:"firewall"`
 	ClientRouting ClientRouting `yaml:"client_routing" json:"client_routing"`
 	Update        Update        `yaml:"update" json:"update"`
@@ -90,6 +91,9 @@ type Rule struct {
 	Family   string `yaml:"family,omitempty" json:"family"` // "", ipv4 or ipv6; "" infers from src/dst, else IPv4
 	Action   string `yaml:"action,omitempty" json:"action"` // lookup (default), blackhole, unreachable, prohibit
 	Table    string `yaml:"table,omitempty" json:"table"`   // for action=lookup
+	// Check makes the rule conditional: it is in the kernel only while this
+	// health check (by id) is not failing. Empty means always.
+	Check    string `yaml:"check,omitempty" json:"check"`
 	Comment  string `yaml:"comment,omitempty" json:"comment"`
 	Disabled bool   `yaml:"disabled,omitempty" json:"disabled"`
 	Source   string `yaml:"-" json:"source,omitempty"`
@@ -248,4 +252,24 @@ type ConntrackInfo struct {
 	Count     int    `json:"count"`            // entries in the table
 	Max       int    `json:"max"`              // table limit
 	Acct      bool   `json:"acct"`             // byte counters on
+}
+
+// Check is a health check: a ping sent out of one interface. Rules that name
+// a check are switched off while it is failing and back on once it recovers.
+type Check struct {
+	ID        string `yaml:"id" json:"id"`
+	Name      string `yaml:"name" json:"name"`
+	Target    string `yaml:"target" json:"target"`       // IPv4 or IPv6 address to ping
+	Interface string `yaml:"interface" json:"interface"` // the ping leaves through this interface
+	// Table is optional. A ping bound to an interface goes out through it
+	// even without a route (Linux assumes the target is on that link), which is
+	// all a tunnel like WireGuard needs. An exit reached through a gateway
+	// needs the real route, which usually lives in a custom table; name that
+	// table and the check looks its route up there.
+	Table        string `yaml:"table,omitempty" json:"table"`
+	IntervalSecs int    `yaml:"interval_secs,omitempty" json:"interval_secs"` // between pings (default 5)
+	TimeoutMs    int    `yaml:"timeout_ms,omitempty" json:"timeout_ms"`       // wait for a reply (default 1000)
+	FailAfter    int    `yaml:"fail_after,omitempty" json:"fail_after"`       // consecutive misses before "down" (default 3)
+	RecoverAfter int    `yaml:"recover_after,omitempty" json:"recover_after"` // consecutive replies before "up" again (default 2)
+	Comment      string `yaml:"comment,omitempty" json:"comment"`
 }

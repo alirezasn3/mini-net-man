@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alirezasn3/mini-net-man/internal/health"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
 	"gopkg.in/yaml.v3"
@@ -30,6 +31,8 @@ type Engine struct {
 	lastIssueKey string
 	lastAddr     []kernel.Addr
 	safe         *safeSession
+
+	mon *health.Monitor // pings for the health checks rules can depend on
 }
 
 type safeSession struct {
@@ -46,8 +49,21 @@ type SafeStatus struct {
 }
 
 func New(k kernel.Kernel, cfg model.Config, path string, log *slog.Logger) *Engine {
-	return &Engine{k: k, cfg: cfg, path: path, log: log}
+	e := &Engine{k: k, cfg: cfg, path: path, log: log}
+	e.mon = health.New(k, e.healthChanged)
+	return e
 }
+
+// healthChanged runs when a health check goes down or comes back: rules that
+// depend on it appear or disappear, so the kernel is reconciled.
+func (e *Engine) healthChanged() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.applyLocked(false)
+}
+
+// CheckStatuses returns the latest result of every health check, by id.
+func (e *Engine) CheckStatuses() map[string]health.Status { return e.mon.Statuses() }
 
 func (e *Engine) baselinePath() string { return e.path + ".baseline" }
 func (e *Engine) statePath() string    { return e.path + ".state" }
@@ -92,6 +108,7 @@ func (e *Engine) Start() {
 	}
 	st := loadState(e.statePath())
 	e.lastAddr = st.Addresses
+	e.mon.Sync(e.cfg.Checks)
 	e.applyLocked(true)
 }
 
@@ -122,6 +139,7 @@ func (e *Engine) Run(ctx context.Context) {
 	var debounce <-chan time.Time
 	var recent []time.Time // event-driven reconciles that really changed something
 	wait, nextRetry := retryMin, time.Time{}
+	defer e.mon.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -195,6 +213,7 @@ func (e *Engine) Update(fn func(c *model.Config) error) ([]model.Issue, error) {
 		return nil, err
 	}
 	e.cfg = next
+	e.mon.Sync(next.Checks)
 	e.applyLocked(false)
 	return append([]model.Issue(nil), e.issues...), nil
 }
@@ -229,7 +248,7 @@ func (e *Engine) desiredLocked() Desired {
 			nets[a.Interface] = append(nets[a.Interface], a.Address)
 		}
 	}
-	return Expand(e.cfg, func(iface string) []string { return NetsOf(nets[iface]) })
+	return Expand(e.cfg, func(iface string) []string { return NetsOf(nets[iface]) }, e.mon.IsDown)
 }
 
 // ---- safe mode -----------------------------------------------------------
@@ -315,6 +334,7 @@ func (e *Engine) revertLocked() {
 	base := clone(e.safe.baseline)
 	base.Web = e.cfg.Web // panel settings aren't rolled back
 	e.cfg = base
+	e.mon.Sync(base.Checks)
 	e.safe = nil
 	_ = os.Remove(e.baselinePath())
 	if err := SaveConfig(e.path, e.cfg); err != nil {

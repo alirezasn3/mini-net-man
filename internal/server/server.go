@@ -88,6 +88,8 @@ func (s *Server) Handler() http.Handler {
 
 	crud(s, authed, "/api/addresses", func(c *model.Config) *[]model.Address { return &c.Addresses }, func(a *model.Address) *string { return &a.ID })
 	crud(s, authed, "/api/routes", func(c *model.Config) *[]model.Route { return &c.Routes }, func(a *model.Route) *string { return &a.ID })
+	crud(s, authed, "/api/checks", func(c *model.Config) *[]model.Check { return &c.Checks }, func(a *model.Check) *string { return &a.ID })
+	authed.HandleFunc("GET /api/checks/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.eng.CheckStatuses()) })
 	crud(s, authed, "/api/rules", func(c *model.Config) *[]model.Rule { return &c.Rules }, func(a *model.Rule) *string { return &a.ID })
 	crud(s, authed, "/api/firewall/rules", func(c *model.Config) *[]model.FWRule { return &c.Firewall.Rules }, func(a *model.FWRule) *string { return &a.ID })
 	crud(s, authed, "/api/client-routing/clients", func(c *model.Config) *[]model.ClientRoute { return &c.ClientRouting.Clients }, func(a *model.ClientRoute) *string { return &a.ID })
@@ -165,6 +167,22 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("POST /api/import/scan", s.importScan)
 	authed.HandleFunc("POST /api/import/apply", s.importApply)
 	authed.HandleFunc("POST /api/import/disable-ufw", s.disableUFW)
+
+	if m, ok := s.eng.Kernel().(*kernel.Mock); ok {
+		// Only with -mock: lets the UI be tried without a real network by
+		// making pings out of an interface fail or work again.
+		authed.HandleFunc("POST /api/mock/ping", func(w http.ResponseWriter, r *http.Request) {
+			var in struct {
+				Interface string `json:"interface"`
+				Fail      bool   `json:"fail"`
+			}
+			if !decode(w, r, &in) {
+				return
+			}
+			m.SetPingFail(in.Interface, in.Fail)
+			writeJSON(w, map[string]bool{"ok": true})
+		})
+	}
 
 	api.Handle("/api/", s.requireAuth(authed))
 	mux.Handle("/api/", api)
