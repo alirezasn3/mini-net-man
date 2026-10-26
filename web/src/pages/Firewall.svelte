@@ -65,6 +65,8 @@
     endpoint="/api/firewall/rules"
     addLabel="Add rule"
     orderable
+    groupBy={(r) => r.chain}
+    groupOrder={chains}
     onchange={reload}
     {generated}
     {defaults}

@@ -11,6 +11,8 @@
     blank,
     orderable = false,
     sort = null,
+    groupBy = null, // (item) => string: keep rows of a group together, with a gap between groups
+    groupOrder = [], // order of the groups; unlisted ones go last
     generated = [],
     rowBadge = null, // (item) => { text, cls, title } | null: a status chip beside the first column
     defaults = [], // rows for each chain's default action: editable, but not deletable or movable
@@ -21,7 +23,16 @@
   } = $props()
 
   let items = $state([])
-  const shown = $derived(sort ? [...items].sort(sort) : items)
+  const rank = (it) => {
+    const i = groupOrder.indexOf(groupBy(it))
+    return i < 0 ? groupOrder.length : i
+  }
+  // Array.sort is stable, so rows keep their list order inside a group.
+  const shown = $derived(groupBy ? [...items].sort((a, b) => rank(a) - rank(b)) : sort ? [...items].sort(sort) : items)
+  const gap = (i) => groupBy && i > 0 && groupBy(shown[i]) !== groupBy(shown[i - 1])
+  // Rows only move within their group; the server wants the neighbour's place in the whole list.
+  const canMove = (i, d) => shown[i + d] && (!groupBy || groupBy(shown[i + d]) === groupBy(shown[i]))
+  const moveBy = (i, d) => move(shown[i], items.findIndex((x) => x.id === shown[i + d].id))
   let draft = $state(null)
   let isNew = $state(false)
   let dialog = $state()
@@ -77,6 +88,10 @@
   const cell = (col, item) => (col.render ? col.render(item) : (item[col.key] ?? ''))
 </script>
 
+{#snippet spacer()}
+  <tr aria-hidden="true" class="max-sm:block"><td colspan={columns.length + 1} class="h-4 bg-slate-950/80 p-0 max-sm:block"></td></tr>
+{/snippet}
+
 <section class="card">
   <header class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
     <h2 class="text-sm font-semibold">{title} <span class="ml-1 font-normal text-slate-400">{items.length}</span></h2>
@@ -96,6 +111,7 @@
       <tbody class="divide-y divide-slate-100 max-sm:block dark:divide-slate-800">
         {#each shown as item, i (item.id)}
           {@const bad = issuesFor(item.id)}
+          {#if gap(i)}{@render spacer()}{/if}
           <tr class="hover:bg-slate-50 max-sm:block max-sm:px-4 max-sm:py-3 dark:hover:bg-slate-800/40 {item.disabled ? 'opacity-50' : ''}">
             {#each columns as col, ci}
               {@const v = cell(col, item)}
@@ -114,8 +130,8 @@
             {/each}
             <td class="td text-right whitespace-nowrap max-sm:flex max-sm:flex-wrap max-sm:justify-end max-sm:gap-1 max-sm:px-0 max-sm:pt-2 max-sm:whitespace-normal">
               {#if orderable}
-                <button class="btn btn-ghost btn-sm" disabled={i === 0} title="Move up" aria-label="Move up" onclick={() => move(item, i - 1)}>↑</button>
-                <button class="btn btn-ghost btn-sm" disabled={i === shown.length - 1} title="Move down" aria-label="Move down" onclick={() => move(item, i + 1)}>↓</button>
+                <button class="btn btn-ghost btn-sm" disabled={!canMove(i, -1)} title="Move up" aria-label="Move up" onclick={() => moveBy(i, -1)}>↑</button>
+                <button class="btn btn-ghost btn-sm" disabled={!canMove(i, 1)} title="Move down" aria-label="Move down" onclick={() => moveBy(i, 1)}>↓</button>
               {/if}
               <button class="btn btn-ghost btn-sm" onclick={() => toggle(item)}>{item.disabled ? 'Enable' : 'Disable'}</button>
               <button class="btn btn-ghost btn-sm" onclick={() => openEdit(item)}>Edit</button>
@@ -128,6 +144,7 @@
         {:else}
           <tr class="max-sm:block"><td class="td py-8 text-center text-slate-400 max-sm:block" colspan={columns.length + 1}>Nothing here yet.</td></tr>
         {/each}
+        {#if groupBy && shown.length && generated.length}{@render spacer()}{/if}
         {#each generated as item (item.id)}
           <tr class="bg-slate-50/70 text-slate-500 max-sm:block max-sm:px-4 max-sm:py-3 dark:bg-slate-900/60 dark:text-slate-400">
             {#each columns as col, ci}
@@ -144,6 +161,7 @@
             <td class="td max-sm:hidden"></td>
           </tr>
         {/each}
+        {#if groupBy && (shown.length || generated.length) && defaults.length}{@render spacer()}{/if}
         {#each defaults as item (item.id)}
           <tr class="bg-slate-950/50 max-sm:block max-sm:px-4 max-sm:py-3">
             {#each columns as col, ci}
