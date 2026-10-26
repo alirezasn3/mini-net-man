@@ -31,7 +31,7 @@
   const page = $derived(pages.find((p) => p.path === route) ?? pages[0])
   window.addEventListener('hashchange', () => (route = location.hash.replace(/^#\/?/, '') || 'overview'))
 
-  let login = $state({ username: 'admin', password: '', error: '', busy: false })
+  let login = $state({ username: '', password: '', error: '', busy: false })
 
   setUnauthorizedHandler(() => (app.user = null))
 

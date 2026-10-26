@@ -64,6 +64,7 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("GET /api/me", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]string{"user": userOf(r)}) })
 	authed.HandleFunc("GET /api/overview", s.overview)
 	authed.HandleFunc("POST /api/password", s.password)
+	authed.HandleFunc("POST /api/username", s.username)
 	authed.HandleFunc("POST /api/reapply", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]any{"issues": s.eng.Reapply()}) })
 
 	authed.HandleFunc("GET /api/links", func(w http.ResponseWriter, r *http.Request) {
@@ -331,6 +332,47 @@ func (s *Server) password(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	s.sess.dropUser(user)
+}
+
+// username renames the logged-in user. The password is asked for again, as for
+// a password change, and the session carries on under the new name.
+func (s *Server) username(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Password, New string }
+	if !decode(w, r, &in) {
+		return
+	}
+	user, name := userOf(r), strings.TrimSpace(in.New)
+	if !checkPassword(s.eng.Config().Web.Users, user, in.Password) {
+		httpErr(w, http.StatusForbidden, errors.New("password is wrong"))
+		return
+	}
+	if err := model.ValidUsername(name); err != nil {
+		httpErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if name == user {
+		writeJSON(w, map[string]string{"user": user})
+		return
+	}
+	_, err := s.eng.Update(func(c *model.Config) error {
+		for _, u := range c.Web.Users {
+			if u.Name == name {
+				return fmt.Errorf("there is already a user called %q", name)
+			}
+		}
+		for i := range c.Web.Users {
+			if c.Web.Users[i].Name == user {
+				c.Web.Users[i].Name = name
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		httpErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.sess.rename(user, name)
+	writeJSON(w, map[string]string{"user": name})
 }
 
 func (s *Server) putWebSettings(w http.ResponseWriter, r *http.Request) {

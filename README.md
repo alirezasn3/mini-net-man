@@ -37,7 +37,7 @@ By default only the server itself may open the panel, so reach it through an SSH
 sudo ~/mini-net-man/mini-net-man install -allow 203.0.113.7 -port 8080
 ```
 
-`-allow` takes IPs or CIDRs, comma separated, and adds to localhost rather than replacing it. If ufw is active you also need `ufw allow from 203.0.113.7 to any port 8080`. Change the password with `mini-net-man passwd admin`.
+`-allow` takes IPs or CIDRs, comma separated, and adds to localhost rather than replacing it. If ufw is active you also need `ufw allow from 203.0.113.7 to any port 8080`. Change the password with `mini-net-man passwd admin`, or the username and password from **Settings** in the panel. The login page doesn't suggest a username.
 
 To try it first without installing anything, run `sudo ~/mini-net-man/mini-net-man run` in the foreground. Stopping it does not undo the rules it created.
 

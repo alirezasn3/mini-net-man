@@ -83,6 +83,18 @@ func (s *sessions) dropUser(user string) {
 	}
 }
 
+// rename keeps a user's sessions alive under their new name.
+func (s *sessions) rename(from, to string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for t, v := range s.byToken {
+		if v.user == from {
+			v.user = to
+			s.byToken[t] = v
+		}
+	}
+}
+
 func (s *sessions) locked(ip string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

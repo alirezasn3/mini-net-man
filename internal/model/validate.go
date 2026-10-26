@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/alirezasn3/mini-net-man/internal/tuning"
 )
@@ -185,6 +186,20 @@ func validIfaceMatch(s string) bool {
 		s = s[:i]
 	}
 	return validIface(s)
+}
+
+// ValidUsername limits panel user names to something safe to show and log:
+// 1 to 32 printable characters, no spaces.
+func ValidUsername(s string) error {
+	if s == "" || len(s) > 32 {
+		return fmt.Errorf("the username must be 1 to 32 characters")
+	}
+	for _, r := range s {
+		if r <= ' ' || r == 0x7f || unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("the username can't contain spaces or control characters")
+		}
+	}
+	return nil
 }
 
 // Validate checks one address entry.

@@ -423,6 +423,9 @@ func passwd(args []string) error {
 		return errors.New("usage: mini-net-man passwd USER [-config PATH]")
 	}
 	user := f.rest[0]
+	if err := model.ValidUsername(user); err != nil {
+		return err
+	}
 	cfg, ok, err := engine.LoadConfig(f.config)
 	if err != nil {
 		return err

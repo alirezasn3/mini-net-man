@@ -4,6 +4,7 @@
 
   let web = $state({ listen: '', port: 8080, allowed_ips: '', users: [], tls: false })
   let pw = $state({ old: '', new: '', again: '' })
+  let un = $state({ password: '', name: '' })
 
   async function load() {
     const w = await api('GET', '/api/settings/web')
@@ -23,6 +24,15 @@
     e.preventDefault()
     if (pw.new !== pw.again) return act(() => Promise.reject(new Error('Passwords do not match')))
     if (await act(() => api('POST', '/api/password', { old: pw.old, new: pw.new }), 'Password changed. Please log in again.')) location.reload()
+  }
+  async function changeName(e) {
+    e.preventDefault()
+    const r = await act(() => api('POST', '/api/username', { password: un.password, new: un.name }), 'Username changed')
+    if (r) {
+      app.user = r.user
+      un = { password: '', name: '' }
+      load()
+    }
   }
   let checking = $state(false)
   let installing = $state(false)
@@ -76,6 +86,14 @@
     </div>
     <p class="text-xs text-slate-500">{web.tls ? 'TLS is on (set in the config file).' : 'Served over plain HTTP. Set tls_cert and tls_key in the config file, or put it behind something that terminates TLS.'}</p>
     <button class="btn btn-primary">Save</button>
+  </form>
+
+  <form class="card space-y-4 p-4" onsubmit={changeName}>
+    <h2 class="text-sm font-semibold">Username</h2>
+    <p class="text-sm text-slate-500">You are signed in as <span class="mono">{app.user}</span>. You stay signed in after changing it.</p>
+    <div><label class="label" for="newname">New username</label><input id="newname" class="input" autocomplete="off" spellcheck="false" bind:value={un.name} /><p class="hint">1 to 32 characters, no spaces.</p></div>
+    <div><label class="label" for="unpw">Your password</label><input id="unpw" type="password" autocomplete="current-password" class="input" bind:value={un.password} /></div>
+    <button class="btn btn-primary">Change username</button>
   </form>
 
   <form class="card space-y-4 p-4" onsubmit={changePw}>
