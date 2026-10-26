@@ -27,11 +27,50 @@
     const i = groupOrder.indexOf(groupBy(it))
     return i < 0 ? groupOrder.length : i
   }
-  // Array.sort is stable, so rows keep their list order inside a group.
-  const shown = $derived(groupBy ? [...items].sort((a, b) => rank(a) - rank(b)) : sort ? [...items].sort(sort) : items)
-  const gap = (i) => groupBy && i > 0 && groupBy(shown[i]) !== groupBy(shown[i - 1])
+
+  // A sort picked by the user (click a column heading) is only a way of looking at the list:
+  // it is remembered in this browser, and never changes the order the rules are applied in.
+  const sortStore = () => `mnm-sort:${endpoint}`
+  const saved = (() => {
+    try {
+      const [key, dir] = (localStorage.getItem(sortStore()) ?? '').split(':')
+      return columns.some((c) => c.key === key) ? { key, dir: dir === '-1' ? -1 : 1 } : null
+    } catch {
+      return null
+    }
+  })()
+  let sortKey = $state(saved?.key ?? null)
+  let sortDir = $state(saved?.dir ?? 1)
+  function setSort(key, dir = 1) {
+    sortKey = key
+    sortDir = dir
+    try {
+      if (key) localStorage.setItem(sortStore(), `${key}:${dir}`)
+      else localStorage.removeItem(sortStore())
+    } catch {}
+  }
+  // Click: ascending, then descending, then back to the page's own order.
+  const cycle = (key) => (sortKey !== key ? setSort(key, 1) : sortDir === 1 ? setSort(key, -1) : setSort(null))
+  const sortCol = $derived(columns.find((c) => c.key === sortKey))
+  const sortVal = (col, it) => (col.sortBy ? col.sortBy(it) : col.render ? col.render(it) : it[col.key])
+  const blank_ = (v) => v === '' || v == null
+  function byColumn(col, dir) {
+    return (a, b) => {
+      const x = sortVal(col, a)
+      const y = sortVal(col, b)
+      if (blank_(x) || blank_(y)) return blank_(x) - blank_(y) // empty cells go last, either way
+      const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: 'base' })
+      return c * dir
+    }
+  }
+  // Array.sort is stable, so equal rows keep their list order.
+  const shown = $derived(
+    sortCol ? [...items].sort(byColumn(sortCol, sortDir)) : groupBy ? [...items].sort((a, b) => rank(a) - rank(b)) : sort ? [...items].sort(sort) : items,
+  )
+  const grouped = $derived(groupBy && !sortCol)
+  const gap = (i) => grouped && i > 0 && groupBy(shown[i]) !== groupBy(shown[i - 1])
   // Rows only move within their group; the server wants the neighbour's place in the whole list.
-  const canMove = (i, d) => shown[i + d] && (!groupBy || groupBy(shown[i + d]) === groupBy(shown[i]))
+  const canMove = (i, d) => !sortCol && shown[i + d] && (!groupBy || groupBy(shown[i + d]) === groupBy(shown[i]))
   const moveBy = (i, d) => move(shown[i], items.findIndex((x) => x.id === shown[i + d].id))
   let draft = $state(null)
   let isNew = $state(false)
@@ -95,8 +134,28 @@
 <section class="card">
   <header class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
     <h2 class="text-sm font-semibold">{title} <span class="ml-1 font-normal text-slate-400">{items.length}</span></h2>
-    <button class="btn btn-primary btn-sm" onclick={openNew}>+ {addLabel}</button>
+    <div class="flex items-center gap-2">
+      <!-- Phones have no column headings to click. -->
+      <select class="input w-auto py-1 text-xs sm:hidden" aria-label="Sort by" value={sortKey ? `${sortKey}:${sortDir}` : ''}
+        onchange={(e) => { const [k, d] = e.currentTarget.value.split(':'); setSort(k || null, Number(d) || 1) }}>
+        <option value="">default order</option>
+        {#each columns as col}
+          <option value="{col.key}:1">{col.label} ↑</option>
+          <option value="{col.key}:-1">{col.label} ↓</option>
+        {/each}
+      </select>
+      <button class="btn btn-primary btn-sm" onclick={openNew}>+ {addLabel}</button>
+    </div>
   </header>
+  {#if sortCol}
+    <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50/60 px-4 py-2 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-900/40">
+      <span>
+        Sorted by <b>{sortCol.label}</b> {sortDir === 1 ? '↑' : '↓'}.
+        {#if orderable}This only changes how the list looks: rules are still applied in their own order, and moving is off until you reset.{/if}
+      </span>
+      <button class="btn btn-ghost btn-sm" onclick={() => setSort(null)}>Reset</button>
+    </div>
+  {/if}
 
   <!-- Wide screens: a table. Phones: every row becomes a card (labels come from the column
        names), so the Edit / Delete buttons never end up off-screen. -->
@@ -104,7 +163,13 @@
     <table class="w-full text-sm max-sm:block">
       <thead class="border-b border-slate-200 max-sm:hidden dark:border-slate-800">
         <tr>
-          {#each columns as col}<th class="th">{col.label}</th>{/each}
+          {#each columns as col}
+            <th class="th" aria-sort={sortKey === col.key ? (sortDir === 1 ? 'ascending' : 'descending') : 'none'}>
+              <button class="inline-flex cursor-pointer items-center gap-1 hover:text-slate-300 {sortKey === col.key ? 'text-slate-200' : ''}" title="Sort by {col.label}" onclick={() => cycle(col.key)}>
+                {col.label}<span class="w-3 text-accent-300">{sortKey === col.key ? (sortDir === 1 ? '↑' : '↓') : ''}</span>
+              </button>
+            </th>
+          {/each}
           <th class="th"></th>
         </tr>
       </thead>
@@ -144,7 +209,7 @@
         {:else}
           <tr class="max-sm:block"><td class="td py-8 text-center text-slate-400 max-sm:block" colspan={columns.length + 1}>Nothing here yet.</td></tr>
         {/each}
-        {#if groupBy && shown.length && generated.length}{@render spacer()}{/if}
+        {#if grouped && shown.length && generated.length}{@render spacer()}{/if}
         {#each generated as item (item.id)}
           <tr class="bg-slate-50/70 text-slate-500 max-sm:block max-sm:px-4 max-sm:py-3 dark:bg-slate-900/60 dark:text-slate-400">
             {#each columns as col, ci}
@@ -161,7 +226,7 @@
             <td class="td max-sm:hidden"></td>
           </tr>
         {/each}
-        {#if groupBy && (shown.length || generated.length) && defaults.length}{@render spacer()}{/if}
+        {#if grouped && (shown.length || generated.length) && defaults.length}{@render spacer()}{/if}
         {#each defaults as item (item.id)}
           <tr class="bg-slate-950/50 max-sm:block max-sm:px-4 max-sm:py-3">
             {#each columns as col, ci}

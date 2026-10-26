@@ -73,7 +73,7 @@
     defaultOptions={['accept', 'drop', 'reject']}
     ondefault={setDefault}
     columns={[
-      { key: 'chain', label: 'Chain', mono: true },
+      { key: 'chain', label: 'Chain', mono: true, sortBy: (r) => chains.indexOf(r.chain) },
       { key: 'action', label: 'Action', mono: true, render: target },
       { key: 'match', label: 'Match', mono: true, render: match },
       { key: 'comment', label: 'Comment' },
