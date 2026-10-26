@@ -83,3 +83,20 @@ func TestRenderInterfaceWildcard(t *testing.T) {
 		t.Errorf("wildcard rendering:\n%s", out)
 	}
 }
+
+func TestRenderMarking(t *testing.T) {
+	out := RenderNFT(model.Firewall{Rules: []model.FWRule{
+		{Chain: "mangle-in", Action: "mark-connection", InIface: "ens70", Mark: 70},
+		{Chain: "mangle-out", Action: "restore-mark"},
+	}})
+	for _, want := range []string{
+		"type filter hook prerouting priority -150; policy accept;",
+		"type route hook output priority -150; policy accept;",
+		`iifname "ens70" ct mark set 70 meta mark set 70`,
+		"ct mark != 0 meta mark set ct mark",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}

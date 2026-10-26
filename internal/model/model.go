@@ -122,12 +122,24 @@ type FirewallPolicy struct {
 // machine (chain mangle only). MSS 0 means "to fit the outgoing route's MTU".
 const ActionClampMSS = "clamp-mss"
 
+// Marking. A packet carries a number (its mark) that policy rules can route
+// on (Rule.Fwmark). mark-connection stamps the mark on the packet and on the
+// whole connection; restore-mark gives a packet the mark its connection already
+// has, which is how replies find their way back out the interface a request
+// came in on.
+const (
+	ActionMarkConnection = "mark-connection"
+	ActionRestoreMark    = "restore-mark"
+)
+
 // FW chains.
 const (
 	ChainInput       = "input"
 	ChainForward     = "forward"
 	ChainOutput      = "output"
-	ChainMangle      = "mangle"
+	ChainMangle      = "mangle"     // forwarded traffic: MSS clamping
+	ChainMangleIn    = "mangle-in"  // everything arriving, before the routing decision: marking
+	ChainMangleOut   = "mangle-out" // traffic this machine sends, re-routed if its mark changes
 	ChainPrerouting  = "dstnat"
 	ChainPostrouting = "srcnat"
 )
@@ -135,8 +147,8 @@ const (
 // FWRule is one firewall rule. Rules are evaluated per chain in list order.
 type FWRule struct {
 	ID        string `yaml:"id" json:"id"`
-	Chain     string `yaml:"chain" json:"chain"`   // input|forward|output|mangle|dstnat|srcnat
-	Action    string `yaml:"action" json:"action"` // accept|drop|reject|masquerade|dnat|snat|return|clamp-mss
+	Chain     string `yaml:"chain" json:"chain"`   // input|forward|output|mangle|mangle-in|mangle-out|dstnat|srcnat
+	Action    string `yaml:"action" json:"action"` // accept|drop|reject|masquerade|dnat|snat|return|clamp-mss|mark-connection|restore-mark
 	InIface   string `yaml:"in_iface,omitempty" json:"in_iface"`
 	OutIface  string `yaml:"out_iface,omitempty" json:"out_iface"`
 	Src       string `yaml:"src,omitempty" json:"src"`
@@ -149,6 +161,7 @@ type FWRule struct {
 	ToAddr    string `yaml:"to_addr,omitempty" json:"to_addr"`       // dnat/snat target IP
 	ToPort    int    `yaml:"to_port,omitempty" json:"to_port"`       // dnat/snat target port
 	MSS       int    `yaml:"mss,omitempty" json:"mss"`               // clamp-mss: size to clamp to; 0 = fit the route\'s MTU
+	Mark      uint32 `yaml:"mark,omitempty" json:"mark"`             // mark-connection: the mark to set
 	Comment   string `yaml:"comment,omitempty" json:"comment"`
 	Disabled  bool   `yaml:"disabled,omitempty" json:"disabled"`
 	Source    string `yaml:"-" json:"source,omitempty"`

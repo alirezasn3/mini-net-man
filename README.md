@@ -6,6 +6,7 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 - **Routes** and **policy rules**: `ip route … table N` and `ip rule … priority N`, created by hand.
 - **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically. Interface fields take a trailing `*` as a wildcard (`wg*` matches `wg0` and `wgBridge1`). Each chain's default action (accept, drop or reject) is the last row of the rule list and editable there.
 - **MSS clamping**: shrink the TCP segment size of connections passing through, so a tunnel or PPPoE exit with a smaller MTU doesn't stall large transfers (MikroTik's `change-mss` mangle rule).
+- **Connection marking**: tag connections by the interface they arrived on and route replies by that tag, for a machine with several links that carry the same client addresses.
 - **Health checks**: ping an address out of an interface, and make policy rules depend on the result. A rule is switched off while its check fails (say, an exit tunnel that has silently died) and back on when it recovers.
 - **Client routing** (optional): send chosen clients out through a chosen interface. It only generates ordinary routes, rules and firewall entries, shown as *generated*.
 - **Ports**: which program is listening on which port (like `ss -tulnp`), and whether it is reachable from every interface or only this machine.
@@ -77,6 +78,19 @@ Add a health check on the **Policy rules** page (name, address to ping, interfac
 - The ping is bound to the interface, so it goes out through it even if no route covers the target, which is what a WireGuard exit with `Table = off` needs. If an exit is reached through a **gateway** whose route is in a custom routing table, put that table in the check's *Routing table* field: mini-net-man then adds a helper rule `oif <interface> lookup <table>` (priority 1, shown as *generated*) that applies only to the check's own pings.
 - The reply has to get past Linux's reverse-path filter (`rp_filter`). In Ubuntu's default loose mode (2) that only needs the target to have *some* route on the machine, which a normal default route in the main table gives it. If a check times out although the exit clearly works, and `rp_filter` is 1 (strict) or the main table has no default route, set `net.ipv4.conf.<interface>.rp_filter=2` (or 0) on the exit interface.
 - IPv4 and IPv6 targets both work. A rule can't be saved if its check doesn't exist, and a check in use can't be deleted.
+
+## Replying on the interface a request came in on
+
+Normally the routing table alone decides where a reply goes. If two links carry the same client addresses (say two servers that both serve `10.0.0.0/16`, load-balanced), the table has one way back to that range, so the reply to a client that arrived on the *other* link leaves by the wrong one and is lost. The fix is to remember which link each connection came in on. In this setup the panel server has `ens70` and `ens71`:
+
+1. **Routing tables**, one per link, on the **Routes** page: `10.0.0.0/16 via <that link's gateway>` in table 70, and the same through the other gateway in table 71.
+2. **Policy rules** on the **Policy rules** page: *Firewall mark* 70 looks up table 70, mark 71 looks up table 71.
+3. **Firewall rules**:
+   - chain `mangle-in`, action `mark-connection`, *In interface* `ens70`, *Mark* 70, and the same with `ens71` and 71. These stamp the mark on every connection that arrives there.
+   - chain `mangle-out`, action `restore-mark`. This gives each reply the mark of its connection, and the kernel routes it again with the new mark.
+4. Set `rp_filter` to loose (2) or off under **Tuning**, because packets from `10.0.0.0/16` arrive on a link the main table doesn't point at, and strict mode drops them.
+
+Forwarded traffic works the same way: add `restore-mark` to `mangle-in` (after the `mark-connection` rules) so the reply direction of a forwarded connection is routed by the mark too. Marks are also what other tools such as WireGuard's `FwMark` use, so pick numbers that don't clash with them.
 
 ## MSS clamping
 

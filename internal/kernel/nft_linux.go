@@ -275,6 +275,18 @@ func action(r model.FWRule) ([]expr.Any, error) {
 		return []expr.Any{&expr.Reject{Type: unix.NFT_REJECT_ICMPX_UNREACH, Code: unix.NFT_REJECT_ICMPX_PORT_UNREACH}}, nil
 	case model.ActionClampMSS:
 		return clampMSS(r.MSS), nil
+	case model.ActionMarkConnection:
+		return []expr.Any{
+			&expr.Immediate{Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.Mark)},
+			&expr.Ct{Key: expr.CtKeyMARK, Register: 1, SourceRegister: true},
+			&expr.Meta{Key: expr.MetaKeyMARK, Register: 1, SourceRegister: true},
+		}, nil
+	case model.ActionRestoreMark:
+		return []expr.Any{
+			&expr.Ct{Key: expr.CtKeyMARK, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}},
+			&expr.Meta{Key: expr.MetaKeyMARK, Register: 1, SourceRegister: true},
+		}, nil
 	case "masquerade":
 		return []expr.Any{&expr.Masq{}}, nil
 	case "dnat", "snat":

@@ -297,18 +297,33 @@ func parsePorts(s string) error {
 
 func (r FWRule) Validate() error {
 	switch r.Chain {
-	case ChainInput, ChainForward, ChainOutput, ChainMangle, ChainPrerouting, ChainPostrouting:
+	case ChainInput, ChainForward, ChainOutput, ChainMangle, ChainMangleIn, ChainMangleOut, ChainPrerouting, ChainPostrouting:
 	default:
 		return fmt.Errorf("invalid chain %q", r.Chain)
 	}
 	nat := r.Chain == ChainPrerouting || r.Chain == ChainPostrouting
-	if r.Chain == ChainMangle && r.Action != ActionClampMSS {
-		return fmt.Errorf("the mangle chain only takes %s rules", ActionClampMSS)
+	marking := r.Action == ActionMarkConnection || r.Action == ActionRestoreMark
+	switch r.Chain {
+	case ChainMangle:
+		if r.Action != ActionClampMSS {
+			return fmt.Errorf("the mangle chain only takes %s rules", ActionClampMSS)
+		}
+	case ChainMangleIn, ChainMangleOut:
+		if !marking {
+			return fmt.Errorf("the %s chain only takes %s and %s rules", r.Chain, ActionMarkConnection, ActionRestoreMark)
+		}
 	}
 	switch r.Action {
 	case "accept", "drop", "reject", "return":
 		if nat && r.Action != "accept" && r.Action != "return" {
 			return fmt.Errorf("action %q is not valid in a NAT chain", r.Action)
+		}
+	case ActionMarkConnection, ActionRestoreMark:
+		if r.Chain != ChainMangleIn && r.Chain != ChainMangleOut {
+			return fmt.Errorf("%s only works in the mangle-in and mangle-out chains", r.Action)
+		}
+		if r.Action == ActionMarkConnection && r.Mark == 0 {
+			return fmt.Errorf("mark-connection needs a mark above 0")
 		}
 	case ActionClampMSS:
 		if r.Chain != ChainMangle {

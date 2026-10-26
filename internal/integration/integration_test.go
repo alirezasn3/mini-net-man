@@ -563,6 +563,66 @@ func TestInterfaceWildcard(t *testing.T) {
 	contains(t, "nft", sh(t, "nft list table inet mini-net-man"), `iifname "eth*"`)
 }
 
+// Two links to two servers that both carry the same client address (10.0.0.5).
+// The routing table has one way back to 10.0.0.0/16, so replies for clients
+// that came in on the other link get lost until connections are marked by the
+// interface they arrived on and replies are routed by that mark.
+func TestRepliesLeaveByTheInterfaceTheyCameIn(t *testing.T) {
+	v := newEnv(t)
+	sh(t, noRPFilter("lo")+`
+for n in a b; do ip netns add c$n; done
+ip link add va type veth peer name ca0 netns ca
+ip link add vb type veth peer name cb0 netns cb
+ip link set va up; ip link set vb up
+ip addr add 192.168.80.1/24 dev va; ip addr add 192.168.81.1/24 dev vb
+sysctl -qw net.ipv4.conf.va.rp_filter=0 net.ipv4.conf.vb.rp_filter=0
+ip netns exec ca sh -c 'ip link set lo up; ip link set ca0 up; ip addr add 192.168.80.2/24 dev ca0; ip addr add 10.0.0.5/32 dev lo; ip route add 192.168.80.1 dev ca0 src 10.0.0.5'
+ip netns exec cb sh -c 'ip link set lo up; ip link set cb0 up; ip addr add 192.168.81.2/24 dev cb0; ip addr add 10.0.0.5/32 dev lo; ip route add 192.168.81.1 dev cb0 src 10.0.0.5'
+sleep 1`)
+	t.Cleanup(func() { try("ip netns del ca; ip netns del cb") })
+	c := exec.Command("nc", "-4", "-l", "-k", "9000")
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Process.Kill(); _ = c.Wait() })
+	time.Sleep(300 * time.Millisecond)
+
+	reach := func(ns, panel string) bool {
+		_, err := try("ip netns exec " + ns + " nc -4 -z -w 2 -s 10.0.0.5 " + panel + " 9000")
+		return err == nil
+	}
+	routes := []model.Route{{ID: "r1", Dst: "10.0.0.0/16", Gateway: "192.168.80.2"}}
+	v.update(t, func(cfg *model.Config) { cfg.Routes = routes })
+	if !reach("ca", "192.168.80.1") {
+		t.Fatal("baseline: the client on the link the route points at can't connect")
+	}
+	if reach("cb", "192.168.81.1") {
+		t.Fatal("baseline: the other client connected without any marking, so this test proves nothing")
+	}
+
+	v.update(t, func(cfg *model.Config) {
+		cfg.Routes = append(routes,
+			model.Route{ID: "r70", Dst: "10.0.0.0/16", Gateway: "192.168.80.2", Table: "70"},
+			model.Route{ID: "r71", Dst: "10.0.0.0/16", Gateway: "192.168.81.2", Table: "71"})
+		cfg.Rules = []model.Rule{
+			{ID: "p70", Priority: 100, Fwmark: 70, Table: "70"},
+			{ID: "p71", Priority: 101, Fwmark: 71, Table: "71"},
+		}
+		cfg.Firewall.Rules = []model.FWRule{
+			{ID: "m1", Chain: "mangle-in", Action: "mark-connection", InIface: "va", Mark: 70},
+			{ID: "m2", Chain: "mangle-in", Action: "mark-connection", InIface: "vb", Mark: 71},
+			{ID: "m3", Chain: "mangle-out", Action: "restore-mark"},
+		}
+	})
+	contains(t, "nft", sh(t, "nft list table inet mini-net-man"), "ct mark set 0x00000046", "meta mark set ct mark")
+	for ns, panel := range map[string]string{"ca": "192.168.80.1", "cb": "192.168.81.1"} {
+		if !reach(ns, panel) {
+			t.Errorf("client %s could not connect once connections are marked\nrules:\n%s\ntable 70:\n%s\ntable 71:\n%s",
+				ns, sh(t, "ip rule"), sh(t, "ip route show table 70"), sh(t, "ip route show table 71"))
+		}
+	}
+}
+
 // A ruleset the kernel rejects must leave the previous one untouched.
 func TestFirewallAtomic(t *testing.T) {
 	v := newEnv(t)

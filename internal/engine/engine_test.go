@@ -659,3 +659,24 @@ func TestInterfaceWildcardValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkingValidation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		r  model.FWRule
+		ok bool
+	}{
+		"mark in":             {model.FWRule{ID: "a", Chain: "mangle-in", Action: "mark-connection", InIface: "ens70", Mark: 70}, true},
+		"mark out":            {model.FWRule{ID: "a", Chain: "mangle-out", Action: "mark-connection", Mark: 1}, true},
+		"restore out":         {model.FWRule{ID: "a", Chain: "mangle-out", Action: "restore-mark"}, true},
+		"restore in":          {model.FWRule{ID: "a", Chain: "mangle-in", Action: "restore-mark"}, true},
+		"mark zero":           {model.FWRule{ID: "a", Chain: "mangle-in", Action: "mark-connection"}, false},
+		"mark in forward":     {model.FWRule{ID: "a", Chain: "forward", Action: "mark-connection", Mark: 1}, false},
+		"accept in mangle-in": {model.FWRule{ID: "a", Chain: "mangle-in", Action: "accept"}, false},
+		"clamp in mangle-in":  {model.FWRule{ID: "a", Chain: "mangle-in", Action: "clamp-mss"}, false},
+		"mark in mangle":      {model.FWRule{ID: "a", Chain: "mangle", Action: "restore-mark"}, false},
+	} {
+		if err := tc.r.Validate(); (err == nil) != tc.ok {
+			t.Errorf("%s: err=%v, want ok=%v", name, err, tc.ok)
+		}
+	}
+}

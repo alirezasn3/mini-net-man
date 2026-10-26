@@ -21,6 +21,8 @@ type chainDef struct {
 // chainDefs lists the base chains in the order they are created.
 var chainDefs = []chainDef{
 	{model.ChainMangle, "filter", "forward", -150, nil},
+	{model.ChainMangleIn, "filter", "prerouting", -150, nil},
+	{model.ChainMangleOut, "route", "output", -150, nil},
 	{model.ChainPrerouting, "nat", "prerouting", -100, nil},
 	{model.ChainInput, "filter", "input", 0, func(p model.FirewallPolicy) string { return p.Input }},
 	{model.ChainForward, "filter", "forward", 0, func(p model.FirewallPolicy) string { return p.Forward }},
@@ -132,6 +134,10 @@ func renderRule(r model.FWRule) []string {
 		} else {
 			tail = append(tail, fmt.Sprintf("tcp option maxseg size > %d tcp option maxseg size set %d", r.MSS, r.MSS))
 		}
+	case model.ActionMarkConnection:
+		tail = append(tail, fmt.Sprintf("ct mark set %d meta mark set %d", r.Mark, r.Mark))
+	case model.ActionRestoreMark:
+		tail = append(tail, "ct mark != 0 meta mark set ct mark")
 	case "masquerade":
 		tail = append(tail, "masquerade")
 	case "dnat", "snat":
