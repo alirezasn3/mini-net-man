@@ -20,10 +20,12 @@ func NewID() string {
 // Desired is everything the kernel should look like, after the optional
 // client-routing feature has been expanded into plain items.
 type Desired struct {
-	Addresses []model.Address
-	Routes    []model.Route
-	Rules     []model.Rule
-	Firewall  model.Firewall
+	Bridges    []model.Bridge
+	Interfaces []model.LinkSetting
+	Addresses  []model.Address
+	Routes     []model.Route
+	Rules      []model.Rule
+	Firewall   model.Firewall
 }
 
 const (
@@ -69,6 +71,16 @@ func AllocateExits(cfg *model.Config) {
 // kernel until the check recovers.
 func Expand(cfg model.Config, ifaceNets func(iface string) []string, down func(checkID string) bool) Desired {
 	var d Desired
+	for _, b := range cfg.Bridges {
+		if !b.Disabled {
+			d.Bridges = append(d.Bridges, b)
+		}
+	}
+	for _, l := range cfg.Interfaces {
+		if !l.Disabled {
+			d.Interfaces = append(d.Interfaces, l)
+		}
+	}
 	for _, a := range cfg.Addresses {
 		if !a.Disabled {
 			d.Addresses = append(d.Addresses, a)

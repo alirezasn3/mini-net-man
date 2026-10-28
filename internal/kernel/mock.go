@@ -28,6 +28,7 @@ type Mock struct {
 	sysctls  map[string]string
 	missing  map[string]bool // keys this "kernel" doesn't have
 	noBBR    bool
+	stp      map[string]bool
 	watchers []chan struct{}
 }
 
@@ -112,6 +113,91 @@ func (m *Mock) SetLinkUp(name string, up bool) error {
 		}
 	}
 	return fmt.Errorf("no such interface %q", name)
+}
+
+func (m *Mock) SetLinkMTU(name string, mtu int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := m.link(name)
+	if l == nil {
+		return fmt.Errorf("no such interface %q", name)
+	}
+	l.MTU = mtu
+	m.notify()
+	return nil
+}
+
+func (m *Mock) AddBridge(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.link(name) != nil {
+		return fmt.Errorf("file exists")
+	}
+	m.links = append(m.links, model.Link{Name: name, Index: len(m.links) + 1, Type: "bridge", MTU: 1500,
+		MAC: fmt.Sprintf("02:00:00:00:00:%02x", len(m.links)+1)})
+	m.notify()
+	return nil
+}
+
+func (m *Mock) DelBridge(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.links {
+		if m.links[i].Name != name {
+			continue
+		}
+		if m.links[i].Type != "bridge" {
+			return fmt.Errorf("%s is a %s, not a bridge", name, m.links[i].Type)
+		}
+		for j := range m.links {
+			if m.links[j].Master == name {
+				m.links[j].Master = ""
+			}
+		}
+		m.links = append(m.links[:i], m.links[i+1:]...)
+		delete(m.stp, name)
+		m.notify()
+		return nil
+	}
+	return fmt.Errorf("no such interface %q", name)
+}
+
+// BridgeSTP reports whether spanning tree is on for a bridge (for tests).
+func (m *Mock) BridgeSTP(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stp[name]
+}
+
+func (m *Mock) SetBridgeSTP(name string, on bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if l := m.link(name); l == nil || l.Type != "bridge" {
+		return fmt.Errorf("%s is not a bridge", name)
+	}
+	if m.stp == nil {
+		m.stp = map[string]bool{}
+	}
+	m.stp[name] = on
+	m.notify()
+	return nil
+}
+
+func (m *Mock) SetMaster(iface, bridge string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := m.link(iface)
+	if l == nil {
+		return fmt.Errorf("no such interface %q", iface)
+	}
+	if bridge != "" {
+		if b := m.link(bridge); b == nil || b.Type != "bridge" {
+			return fmt.Errorf("%s is not a bridge", bridge)
+		}
+	}
+	l.Master = bridge
+	m.notify()
+	return nil
 }
 
 func (m *Mock) link(name string) *model.Link {

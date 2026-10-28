@@ -1338,3 +1338,56 @@ sleep 1`)
 		t.Errorf("a bound ping should reach the target with no route: rtt=%v err=%v", rtt, err)
 	}
 }
+
+// TestBridge builds a real bridge with spanning tree, joins ports, repairs
+// drift, and removes it again, checking what `ip` reports at each step.
+func TestBridge(t *testing.T) {
+	v := newEnv(t)
+	v.update(t, func(c *model.Config) {
+		c.Bridges = []model.Bridge{{ID: "b1", Name: "br0", Ports: []string{"wgBridge0", "wgBridge1"}, STP: true, MTU: 1400}}
+		c.Interfaces = []model.LinkSetting{{ID: "i1", Name: "wgServer", State: "down", MTU: 1300}}
+	})
+	br := sh(t, "ip -d link show br0")
+	contains(t, "bridge", br, "bridge", "mtu 1400", "stp_state 1", "UP")
+	for _, p := range []string{"wgBridge0", "wgBridge1"} {
+		contains(t, p, sh(t, "ip link show "+p), "master br0")
+	}
+	if out := sh(t, "ip link show wgServer"); strings.Contains(out, "<") && strings.Contains(strings.SplitN(out, ">", 2)[0], "UP") || !strings.Contains(out, "mtu 1300") {
+		t.Errorf("wgServer should be down with mtu 1300:\n%s", out)
+	}
+	if n := v.eng.Converge(); n != 0 {
+		t.Errorf("a second pass made %d changes, want 0", n)
+	}
+
+	// Someone unplugs a port; the next pass puts it back.
+	sh(t, "ip link set wgBridge0 nomaster")
+	if n := v.eng.Converge(); n == 0 {
+		t.Error("Converge changed nothing after a port was removed")
+	}
+	contains(t, "port restored", sh(t, "ip link show wgBridge0"), "master br0")
+
+	// An address goes on the bridge, as the page tells people to do.
+	v.update(t, func(c *model.Config) {
+		c.Addresses = []model.Address{{ID: "a1", Interface: "br0", Address: "10.77.0.1/24"}}
+	})
+	contains(t, "bridge address", sh(t, "ip -4 addr show br0"), "10.77.0.1/24")
+
+	// A bridge that was there before is joined, not adopted for deletion.
+	sh(t, "ip link add legacy0 type bridge")
+	v.update(t, func(c *model.Config) {
+		c.Bridges = []model.Bridge{{ID: "b2", Name: "legacy0", Ports: []string{"wgBridge1"}}}
+		c.Addresses = nil
+	})
+	if _, err := try("ip link show br0"); err == nil {
+		t.Error("br0 should have been deleted with its config entry")
+	}
+	contains(t, "legacy port", sh(t, "ip link show wgBridge1"), "master legacy0")
+	if out := sh(t, "ip link show wgBridge0"); strings.Contains(out, "master") {
+		t.Errorf("wgBridge0 still has a master after br0 was removed:\n%s", out)
+	}
+	v.update(t, func(c *model.Config) { c.Bridges = nil })
+	sh(t, "ip link show legacy0") // still there
+	if out := sh(t, "ip link show wgBridge1"); strings.Contains(out, "master") {
+		t.Errorf("wgBridge1 not released:\n%s", out)
+	}
+}

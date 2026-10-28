@@ -44,11 +44,15 @@ func (Linux) Links() ([]model.Link, error) {
 		}
 		byIdx[a.LinkIndex] = append(byIdx[a.LinkIndex], a.IPNet.String())
 	}
+	names := map[int]string{}
+	for _, l := range links {
+		names[l.Attrs().Index] = l.Attrs().Name
+	}
 	out := make([]model.Link, 0, len(links))
 	for _, l := range links {
 		at := l.Attrs()
 		m := model.Link{
-			Name: at.Name, Index: at.Index, Type: l.Type(),
+			Name: at.Name, Index: at.Index, Type: l.Type(), Master: names[at.MasterIndex],
 			Up:      at.Flags&net.FlagUp != 0,
 			Running: at.Flags&net.FlagRunning != 0,
 			MTU:     at.MTU, MAC: at.HardwareAddr.String(), Addrs: byIdx[at.Index],
@@ -59,6 +63,82 @@ func (Linux) Links() ([]model.Link, error) {
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+func (Linux) SetLinkUp(name string, up bool) error {
+	l, err := netlink.LinkByName(name)
+	if err != nil {
+		return err
+	}
+	if up {
+		return netlink.LinkSetUp(l)
+	}
+	return netlink.LinkSetDown(l)
+}
+
+func (Linux) SetLinkMTU(name string, mtu int) error {
+	l, err := netlink.LinkByName(name)
+	if err != nil {
+		return err
+	}
+	return netlink.LinkSetMTU(l, mtu)
+}
+
+func (Linux) AddBridge(name string) error {
+	return netlink.LinkAdd(&netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: name}})
+}
+
+func (Linux) DelBridge(name string) error {
+	l, err := netlink.LinkByName(name)
+	if err != nil {
+		return err
+	}
+	if l.Type() != "bridge" {
+		return fmt.Errorf("%s is a %s, not a bridge", name, l.Type())
+	}
+	return netlink.LinkDel(l)
+}
+
+// SetBridgeSTP sets IFLA_BR_STP_STATE. The library has no field for it, so the
+// message is built by hand.
+func (Linux) SetBridgeSTP(name string, on bool) error {
+	l, err := netlink.LinkByName(name)
+	if err != nil {
+		return err
+	}
+	if l.Type() != "bridge" {
+		return fmt.Errorf("%s is a %s, not a bridge", name, l.Type())
+	}
+	req := nl.NewNetlinkRequest(unix.RTM_NEWLINK, unix.NLM_F_ACK)
+	msg := nl.NewIfInfomsg(unix.AF_UNSPEC)
+	msg.Index = int32(l.Attrs().Index)
+	req.AddData(msg)
+	info := nl.NewRtAttr(unix.IFLA_LINKINFO, nil)
+	info.AddRtAttr(nl.IFLA_INFO_KIND, nl.NonZeroTerminated("bridge"))
+	data := info.AddRtAttr(nl.IFLA_INFO_DATA, nil)
+	state := uint32(0)
+	if on {
+		state = 1
+	}
+	data.AddRtAttr(nl.IFLA_BR_STP_STATE, nl.Uint32Attr(state))
+	req.AddData(info)
+	_, err = req.Execute(unix.NETLINK_ROUTE, 0)
+	return err
+}
+
+func (Linux) SetMaster(iface, bridge string) error {
+	l, err := netlink.LinkByName(iface)
+	if err != nil {
+		return err
+	}
+	if bridge == "" {
+		return netlink.LinkSetNoMaster(l)
+	}
+	b, err := netlink.LinkByName(bridge)
+	if err != nil {
+		return err
+	}
+	return netlink.LinkSetMaster(l, b)
 }
 
 func (Linux) ListAddrs() ([]Addr, error) {

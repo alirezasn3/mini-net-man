@@ -90,11 +90,13 @@
 
   function openNew() {
     draft = structuredClone(blank())
+    for (const f of fields) if (f.type === 'list') draft[f.key] = (draft[f.key] ?? []).join(', ')
     isNew = true
     dialog?.showModal()
   }
   function openEdit(item) {
     draft = structuredClone($state.snapshot(item))
+    for (const f of fields) if (f.type === 'list') draft[f.key] = (draft[f.key] ?? []).join(', ')
     isNew = false
     dialog?.showModal()
   }
@@ -103,6 +105,7 @@
     e.preventDefault()
     const body = $state.snapshot(draft)
     for (const f of fields) if (f.type === 'number') body[f.key] = Number(body[f.key]) || 0
+    for (const f of fields) if (f.type === 'list') body[f.key] = String(body[f.key] ?? '').split(/[\s,]+/).filter(Boolean)
     const res = await act(
       () => (isNew ? api('POST', endpoint, body) : api('PUT', `${endpoint}/${body.id}`, body)),
       isNew ? 'Added' : 'Saved',

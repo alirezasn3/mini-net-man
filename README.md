@@ -4,6 +4,7 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 
 - **Interfaces & addresses**: see interfaces, add extra IPs.
 - **Routes** and **policy rules**: `ip route … table N` and `ip rule … priority N`, created by hand.
+- **Interfaces and bridges**: bring interfaces up or down, set their MTU, build bridges and choose their ports, all kept in place by the reconcile loop. The page also says what else manages the network (NetworkManager, systemd-networkd, netplan, ifupdown, ...) and which interfaces each one claims.
 - **Sorting**: click a column heading on any list (routes, policy rules, firewall rules, …) to sort it ascending, again for descending, a third time to go back. It only changes the view, is remembered in your browser, and never changes the order rules are applied in; moving firewall rules is off while a sort is active.
 - **HTTP API**: everything the panel does is a JSON API that other programs can call with an API token (made in Settings, optionally read-only).
 - **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically. Interface fields take a trailing `*` as a wildcard (`wg*` matches `wg0` and `wgBridge1`). Each chain's default action (accept, drop or reject) is the last row of the rule list and editable there.
@@ -94,6 +95,22 @@ Normally the routing table alone decides where a reply goes. If two links carry 
 
 Forwarded traffic works the same way: add `restore-mark` to `mangle-in` (after the `mark-connection` rules) so the reply direction of a forwarded connection is routed by the mark too. Marks are also what other tools such as WireGuard's `FwMark` use, so pick numbers that don't clash with them.
 
+## Interfaces and bridges
+
+The **Interfaces** page lists every interface the kernel has (state, MTU, bridge, addresses) and what manages it, then lets you keep things the way you want them. Like everything else here, what you enter is kept true: if something changes it, the next reconcile puts it back.
+
+- **Interface settings** keep an existing interface *up* or *down* and/or at an *MTU*. A field you leave empty isn't touched. Deleting an entry stops managing the interface; it doesn't undo the change. The **Take down / Bring up** buttons in the list are a shortcut that makes such an entry.
+- **Bridges** make a software switch from the interfaces in *Ports*. The bridge is created if it doesn't exist and brought up; ports that exist are joined and brought up (unless an interface setting keeps them down); ports you remove from the list are released. Spanning tree (*STP*) is off unless you turn it on. An interface can be in only one bridge.
+- **Put the IP address on the bridge**, not on its ports: a port that keeps its own address stops answering on it. Add the address on this page (Addresses) to the bridge once it exists.
+- A bridge mini-net-man **created** is deleted again when you delete its entry. A bridge that already existed (docker0, a bridge from netplan) is only joined to and released from, never deleted, and only the ports mini-net-man joined are released.
+- Taking down the interface this panel is reached through cuts you off. Use **Safe mode**: it reverts everything unless you confirm, and a bridge setup that goes wrong is undone with it. `lo` can't be taken down.
+
+### What manages the network
+
+At the top of the page, mini-net-man reports what else configures this machine: **NetworkManager**, **systemd-networkd**, **netplan** (and the daemon it renders for), **ifupdown**, **ConnMan**, **dhcpcd**, **netctl**, **wicd**, DHCP clients, and **cloud-init**, each marked running and/or configured. In the list, each interface shows who claims it: NetworkManager's device status (anything not *unmanaged*), systemd-networkd's link state, and *mini-net-man* if it is in your config.
+
+When an interface is claimed by NetworkManager or systemd-networkd **and** by mini-net-man, the list shows *both*: that daemon may undo what you set (and you will see the two fight, as the kernel changes again and again). Tell it to leave the interface alone (`nmcli device set <name> managed no`, or an `unmanaged-devices` entry; for networkd, remove or narrow its `.network` file) or don't manage that interface here. This is detection only: mini-net-man never edits those tools' configuration.
+
 ## MSS clamping
 
 MikroTik's `/ip firewall mangle ... action=change-mss new-mss=1300` is a rule with action **clamp-mss** in the **mangle** chain. It rewrites the MSS in the SYN (and SYN-ACK) of TCP connections passing through, so both ends send packets that fit the smallest link on the path. Without it, a client with a 1500 MTU talking through a WireGuard exit (1420) or PPPoE (1492) relies on path-MTU discovery, and when an ICMP "fragmentation needed" message gets lost the symptom is a connection that works for small pages and then hangs on large downloads or TLS handshakes.
@@ -130,11 +147,12 @@ curl -X POST -H "Authorization: Bearer mnm_..." -H "Content-Type: application/js
 - The caller's address must be in **Allowed client IPs**, and wrong tokens count towards the same lockout as wrong passwords (5 in a minute). Changes made with a token are logged with the token's name. Browsers on other sites can't use it (no CORS), which is intended: call it from a server or script. Use TLS (`tls_cert`/`tls_key`) when the token crosses a network you don't trust.
 - Changes apply exactly like in the panel: validated, applied to the kernel, and the reply lists any `issues` that couldn't be applied. Errors are `{"error": "..."}` with a 4xx status.
 
-Lists (`routes`, `rules`, `addresses`, `checks`, `firewall/rules`, `client-routing/clients`) all work the same way: `GET /api/<list>`, `POST` to add (the `id` is made for you), `PUT /api/<list>/{id}` to replace, `DELETE /api/<list>/{id}`, and `POST /api/<list>/{id}/move` with `{"to": index}` to reorder. The JSON fields are the ones in `config.yaml`; the quickest way to see one is to `GET` an existing item.
+Lists (`routes`, `rules`, `addresses`, `bridges`, `interfaces`, `checks`, `firewall/rules`, `client-routing/clients`) all work the same way: `GET /api/<list>`, `POST` to add (the `id` is made for you), `PUT /api/<list>/{id}` to replace, `DELETE /api/<list>/{id}`, and `POST /api/<list>/{id}/move` with `{"to": index}` to reorder. The JSON fields are the ones in `config.yaml`; the quickest way to see one is to `GET` an existing item.
 
 | Call | What it does |
 |---|---|
 | `GET /api/overview`, `/api/links`, `/api/live/routes`, `/api/live/rules` | what the machine looks like right now |
+| `GET /api/links` (with `managed_by`), `/api/network/managers` | interfaces and what manages the network |
 | `GET /api/connections`, `/api/sockets` | tracked connections and listening ports |
 | `GET /api/firewall`, `/api/firewall/ruleset`, `PUT /api/firewall/policy` | firewall config, the generated nft ruleset, default actions |
 | `GET`/`PUT /api/client-routing` | client routing on/off and numbering |

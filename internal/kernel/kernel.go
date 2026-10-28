@@ -36,6 +36,17 @@ type LiveRule struct {
 type Kernel interface {
 	Links() ([]model.Link, error)
 
+	// SetLinkUp brings an interface up or down; SetLinkMTU changes its MTU.
+	SetLinkUp(name string, up bool) error
+	SetLinkMTU(name string, mtu int) error
+	// AddBridge creates an (empty, down) bridge. DelBridge removes one, and
+	// refuses anything that isn't a bridge. SetBridgeSTP turns spanning tree
+	// on or off. SetMaster makes iface a port of bridge, or with "" releases it.
+	AddBridge(name string) error
+	DelBridge(name string) error
+	SetBridgeSTP(name string, on bool) error
+	SetMaster(iface, bridge string) error
+
 	ListAddrs() ([]Addr, error)
 	AddAddr(iface, cidr string) error
 	DelAddr(iface, cidr string) error

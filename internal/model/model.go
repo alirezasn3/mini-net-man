@@ -14,6 +14,8 @@ const (
 type Config struct {
 	Web           Web           `yaml:"web" json:"web"`
 	Sysctl        Sysctl        `yaml:"sysctl" json:"sysctl"`
+	Bridges       []Bridge      `yaml:"bridges,omitempty" json:"bridges"`
+	Interfaces    []LinkSetting `yaml:"interfaces,omitempty" json:"interfaces"`
 	Addresses     []Address     `yaml:"addresses" json:"addresses"`
 	Routes        []Route       `yaml:"routes" json:"routes"`
 	Rules         []Rule        `yaml:"rules" json:"rules"`
@@ -79,6 +81,33 @@ type Address struct {
 	Comment   string `yaml:"comment,omitempty" json:"comment"`
 	Disabled  bool   `yaml:"disabled,omitempty" json:"disabled"`
 	Source    string `yaml:"-" json:"source,omitempty"` // set on generated items only
+}
+
+// Bridge is a software switch (like `ip link add br0 type bridge`): the
+// interfaces in Ports are joined to it and share one network. It is created if
+// it doesn't exist, and removed again if mini-net-man created it and the entry
+// is deleted.
+type Bridge struct {
+	ID       string   `yaml:"id" json:"id"`
+	Name     string   `yaml:"name" json:"name"`
+	Ports    []string `yaml:"ports,omitempty" json:"ports"`
+	STP      bool     `yaml:"stp,omitempty" json:"stp"` // spanning tree, to stop loops between bridges
+	MTU      int      `yaml:"mtu,omitempty" json:"mtu"` // 0 leaves it as it is
+	Comment  string   `yaml:"comment,omitempty" json:"comment"`
+	Disabled bool     `yaml:"disabled,omitempty" json:"disabled"`
+	Source   string   `yaml:"-" json:"source,omitempty"`
+}
+
+// LinkSetting is what to keep true about an interface that already exists:
+// up or down, and its MTU. Fields left empty are not touched.
+type LinkSetting struct {
+	ID       string `yaml:"id" json:"id"`
+	Name     string `yaml:"name" json:"name"`
+	State    string `yaml:"state,omitempty" json:"state"` // "", "up" or "down"
+	MTU      int    `yaml:"mtu,omitempty" json:"mtu"`
+	Comment  string `yaml:"comment,omitempty" json:"comment"`
+	Disabled bool   `yaml:"disabled,omitempty" json:"disabled"`
+	Source   string `yaml:"-" json:"source,omitempty"`
 }
 
 // Route is an entry in a routing table (like `ip route add`).
@@ -218,14 +247,19 @@ type Link struct {
 	Running bool     `json:"running"`
 	MTU     int      `json:"mtu"`
 	MAC     string   `json:"mac"`
-	Addrs   []string `json:"addrs"` // IPv4 and global IPv6
-	RxBytes uint64   `json:"rx_bytes"`
-	TxBytes uint64   `json:"tx_bytes"`
+	Addrs   []string `json:"addrs"`            // IPv4 and global IPv6
+	Master  string   `json:"master,omitempty"` // the bridge this interface is a port of
+	// ManagedBy names what configures it: "NetworkManager", "systemd-networkd"
+	// or "mini-net-man". Empty means nothing does (by hand, or a tool that
+	// ran once at boot). Filled in by the server, not the kernel.
+	ManagedBy []string `json:"managed_by,omitempty"`
+	RxBytes   uint64   `json:"rx_bytes"`
+	TxBytes   uint64   `json:"tx_bytes"`
 }
 
 // Issue reports that one configured item could not be applied.
 type Issue struct {
-	Kind    string `json:"kind"` // address|route|rule|firewall|sysctl
+	Kind    string `json:"kind"` // address|route|rule|firewall|sysctl|bridge|interface
 	ID      string `json:"id"`
 	Message string `json:"message"`
 }

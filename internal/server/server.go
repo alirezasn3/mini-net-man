@@ -24,6 +24,7 @@ import (
 	"github.com/alirezasn3/mini-net-man/internal/importer"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
+	"github.com/alirezasn3/mini-net-man/internal/netmgr"
 	"github.com/alirezasn3/mini-net-man/internal/update"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -43,6 +44,10 @@ type Server struct {
 	upMu    sync.Mutex // guards upCache, pending and serialises installs
 	upCache *updateInfo
 	pending string // version installed on disk but not yet running
+
+	nmMu    sync.Mutex
+	nmCache netmgr.Report
+	nmAt    time.Time
 }
 
 func New(eng *engine.Engine, ui fs.FS, configPath string, mock bool, version string, log *slog.Logger) *Server {
@@ -68,8 +73,12 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("POST /api/reapply", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]any{"issues": s.eng.Reapply()}) })
 
 	authed.HandleFunc("GET /api/links", func(w http.ResponseWriter, r *http.Request) {
-		l, err := s.eng.Kernel().Links()
+		l, err := s.links()
 		respond(w, orEmpty(l), err)
+	})
+	authed.HandleFunc("GET /api/network/managers", func(w http.ResponseWriter, r *http.Request) {
+		l, _ := s.eng.Kernel().Links()
+		writeJSON(w, map[string]any{"managers": orEmpty(s.netmgr(l).Managers)})
 	})
 	authed.HandleFunc("GET /api/live/routes", func(w http.ResponseWriter, r *http.Request) {
 		l, err := s.eng.Kernel().ListRoutes()
@@ -87,6 +96,8 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("GET /api/firewall/ruleset", s.ruleset)
 	authed.HandleFunc("GET /api/generated", s.generated)
 
+	crud(s, authed, "/api/bridges", func(c *model.Config) *[]model.Bridge { return &c.Bridges }, func(a *model.Bridge) *string { return &a.ID })
+	crud(s, authed, "/api/interfaces", func(c *model.Config) *[]model.LinkSetting { return &c.Interfaces }, func(a *model.LinkSetting) *string { return &a.ID })
 	crud(s, authed, "/api/addresses", func(c *model.Config) *[]model.Address { return &c.Addresses }, func(a *model.Address) *string { return &a.ID })
 	crud(s, authed, "/api/routes", func(c *model.Config) *[]model.Route { return &c.Routes }, func(a *model.Route) *string { return &a.ID })
 	crud(s, authed, "/api/checks", func(c *model.Config) *[]model.Check { return &c.Checks }, func(a *model.Check) *string { return &a.ID })
@@ -451,7 +462,7 @@ func (s *Server) putWebSettings(w http.ResponseWriter, r *http.Request) {
 // ---- overview and live views ---------------------------------------------
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
-	links, _ := s.eng.Kernel().Links()
+	links, _ := s.links()
 	links = orEmpty(links)
 	fwd4, _ := s.eng.Kernel().IPForward(false)
 	fwd6, _ := s.eng.Kernel().IPForward(true)

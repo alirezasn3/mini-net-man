@@ -202,6 +202,56 @@ func ValidUsername(s string) error {
 	return nil
 }
 
+// Validate checks one bridge entry.
+func (b Bridge) Validate() error {
+	if b.Name == "" || !validIface(b.Name) || strings.Contains(b.Name, "*") {
+		return fmt.Errorf("the bridge needs a name of up to 15 characters, without spaces")
+	}
+	if b.Name == "lo" {
+		return fmt.Errorf("lo can't be a bridge")
+	}
+	if b.MTU != 0 && (b.MTU < 68 || b.MTU > 65535) {
+		return fmt.Errorf("MTU must be 0 (leave it) or between 68 and 65535")
+	}
+	seen := map[string]bool{}
+	for _, p := range b.Ports {
+		switch {
+		case p == "" || !validIface(p) || strings.Contains(p, "*"):
+			return fmt.Errorf("invalid port name %q", p)
+		case p == b.Name:
+			return fmt.Errorf("a bridge can't be its own port")
+		case p == "lo":
+			return fmt.Errorf("lo can't be a bridge port")
+		case seen[p]:
+			return fmt.Errorf("port %s is listed twice", p)
+		}
+		seen[p] = true
+	}
+	return nil
+}
+
+// Validate checks one interface setting.
+func (l LinkSetting) Validate() error {
+	if l.Name == "" || !validIface(l.Name) || strings.Contains(l.Name, "*") {
+		return fmt.Errorf("the interface needs a name")
+	}
+	switch l.State {
+	case "", "up", "down":
+	default:
+		return fmt.Errorf("state must be empty, up or down")
+	}
+	if l.Name == "lo" && l.State == "down" {
+		return fmt.Errorf("lo can't be taken down: the panel and local services use it")
+	}
+	if l.MTU != 0 && (l.MTU < 68 || l.MTU > 65535) {
+		return fmt.Errorf("MTU must be 0 (leave it) or between 68 and 65535")
+	}
+	if l.State == "" && l.MTU == 0 {
+		return fmt.Errorf("choose a state or an MTU to keep, otherwise this entry does nothing")
+	}
+	return nil
+}
+
 // Validate checks one address entry.
 func (a Address) Validate() error {
 	if a.Interface == "" || !validIface(a.Interface) {
@@ -403,6 +453,51 @@ func (c *Config) Validate() error {
 		}
 		seen[id] = true
 		return nil
+	}
+	bridgeName, portOf := map[string]bool{}, map[string]string{}
+	for _, b := range c.Bridges {
+		if err := check("bridge", b.ID); err != nil {
+			return err
+		}
+		if err := b.Validate(); err != nil {
+			return fmt.Errorf("bridge %s: %w", b.Name, err)
+		}
+		if b.Disabled {
+			continue
+		}
+		if bridgeName[b.Name] {
+			return fmt.Errorf("there are two bridges called %s", b.Name)
+		}
+		bridgeName[b.Name] = true
+	}
+	for _, b := range c.Bridges {
+		if b.Disabled {
+			continue
+		}
+		for _, p := range b.Ports {
+			if bridgeName[p] {
+				return fmt.Errorf("bridge %s: %s is a bridge itself", b.Name, p)
+			}
+			if other, ok := portOf[p]; ok {
+				return fmt.Errorf("%s is a port of both %s and %s; an interface can only be in one bridge", p, other, b.Name)
+			}
+			portOf[p] = b.Name
+		}
+	}
+	setting := map[string]bool{}
+	for _, l := range c.Interfaces {
+		if err := check("interface", l.ID); err != nil {
+			return err
+		}
+		if err := l.Validate(); err != nil {
+			return fmt.Errorf("interface %s: %w", l.Name, err)
+		}
+		if !l.Disabled {
+			if setting[l.Name] {
+				return fmt.Errorf("interface %s has two settings entries; keep one", l.Name)
+			}
+			setting[l.Name] = true
+		}
 	}
 	for _, a := range c.Addresses {
 		if err := check("address", a.ID); err != nil {

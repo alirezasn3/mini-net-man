@@ -32,6 +32,7 @@ type Engine struct {
 
 	lastIssueKey string
 	lastAddr     []kernel.Addr
+	lastBridges  map[string]bridgeState
 	safe         *safeSession
 
 	mon *health.Monitor // pings for the health checks rules can depend on
@@ -110,6 +111,7 @@ func (e *Engine) Start() {
 	}
 	st := loadState(e.statePath())
 	e.lastAddr = st.Addresses
+	e.lastBridges = st.Bridges
 	e.mon.Sync(e.cfg.Checks)
 	e.applyLocked(true)
 }
@@ -389,6 +391,8 @@ func (e *Engine) applyLocked(force bool) int {
 		add("sysctl", f.id, err)
 	}
 
+	e.applyLinksLocked(d, add, do)
+
 	// Addresses.
 	live, err := e.k.ListAddrs()
 	add("address", "", err)
@@ -413,7 +417,7 @@ func (e *Engine) applyLocked(force bool) int {
 		}
 	}
 	e.lastAddr = applied
-	_ = saveState(e.statePath(), state{Addresses: applied})
+	_ = saveState(e.statePath(), state{Addresses: applied, Bridges: e.lastBridges})
 
 	// Routes: we only ever delete routes we stamped with our owner tag.
 	liveRoutes, err := e.k.ListRoutes()

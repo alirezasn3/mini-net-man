@@ -69,6 +69,16 @@ func DefaultConfig(adminPassword string) (model.Config, error) {
 // we own (addresses carry no owner tag).
 type state struct {
 	Addresses []kernel.Addr `json:"addresses"`
+	// Bridges is what we did to each bridge: whether we created it (so we may
+	// delete it), which ports we joined to it, and the spanning-tree setting
+	// we last sent (the kernel can't be asked, and re-sending it makes noise).
+	Bridges map[string]bridgeState `json:"bridges,omitempty"`
+}
+
+type bridgeState struct {
+	Created bool     `json:"created"`
+	Ports   []string `json:"ports"`
+	STP     *bool    `json:"stp,omitempty"`
 }
 
 func loadState(path string) state {
