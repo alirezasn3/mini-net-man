@@ -2,6 +2,8 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"net"
 	"net/http"
@@ -159,6 +161,56 @@ func allowed(list []string, ip string) bool {
 		} else if p := net.ParseIP(e); p != nil && p.Equal(addr) {
 			return true
 		}
+	}
+	return false
+}
+
+const tokenPrefix = "mnm_"
+
+// newToken returns a random API token. 256 random bits can't be guessed or
+// brute-forced offline, so a plain SHA-256 is enough to store it.
+func newToken() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return tokenPrefix + hex.EncodeToString(b)
+}
+
+func hashToken(tok string) string {
+	h := sha256.Sum256([]byte(tok))
+	return hex.EncodeToString(h[:])
+}
+
+// findToken looks the presented secret up without stopping at the first match,
+// so the time taken doesn't depend on which token it was.
+func findToken(tokens []model.Token, presented string) (model.Token, bool) {
+	want := []byte(hashToken(presented))
+	var hit model.Token
+	found := 0
+	for _, t := range tokens {
+		if subtle.ConstantTimeCompare(want, []byte(t.Hash)) == 1 {
+			hit, found = t, 1
+		}
+	}
+	return hit, found == 1
+}
+
+// bearer extracts the secret from an "Authorization: Bearer ..." header.
+func bearer(h string) (string, bool) {
+	scheme, tok, ok := strings.Cut(strings.TrimSpace(h), " ")
+	tok = strings.TrimSpace(tok)
+	return tok, ok && strings.EqualFold(scheme, "Bearer") && tok != ""
+}
+
+// sessionOnly lists what a token may never do, whatever its scope: managing
+// logins and tokens, locking the panel's own address list, replacing the binary.
+func sessionOnly(method, path string) bool {
+	switch {
+	case path == "/api/password", path == "/api/username", path == "/api/update/install":
+		return true
+	case path == "/api/tokens", strings.HasPrefix(path, "/api/tokens/"):
+		return true
+	case path == "/api/settings/web" && method != http.MethodGet:
+		return true
 	}
 	return false
 }

@@ -161,6 +161,9 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, map[string]any{"listen": wc.Listen, "port": wc.Port, "allowed_ips": orEmpty(wc.AllowedIPs), "users": names, "tls": wc.TLSCert != ""})
 	})
 	authed.HandleFunc("PUT /api/settings/web", s.putWebSettings)
+	authed.HandleFunc("GET /api/tokens", s.tokenList)
+	authed.HandleFunc("POST /api/tokens", s.tokenCreate)
+	authed.HandleFunc("DELETE /api/tokens/{id}", s.tokenDelete)
 
 	authed.HandleFunc("GET /api/tuning", s.tuningList)
 	authed.HandleFunc("PUT /api/tuning/{id}", s.tuningSet)
@@ -228,6 +231,10 @@ func (s *Server) gate(next http.Handler) http.Handler {
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h := r.Header.Get("Authorization"); h != "" {
+			s.tokenAuth(next, w, r, h)
+			return
+		}
 		c, err := r.Cookie(cookieName)
 		if err != nil {
 			httpErr(w, http.StatusUnauthorized, errors.New("not logged in"))
@@ -246,6 +253,42 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, user)))
 	})
+}
+
+// tokenAuth serves a call made by another program with an API token. There is
+// no CSRF risk to guard against (browsers never attach this header on their
+// own), so the JSON content-type rule doesn't apply. Wrong tokens count
+// towards the same per-address lockout as wrong passwords.
+func (s *Server) tokenAuth(next http.Handler, w http.ResponseWriter, r *http.Request, header string) {
+	ip := clientIP(r)
+	if s.sess.locked(ip) {
+		httpErr(w, http.StatusTooManyRequests, errors.New("too many failed attempts; try again in a minute"))
+		return
+	}
+	secret, ok := bearer(header)
+	var tok model.Token
+	if ok {
+		tok, ok = findToken(s.eng.Config().Web.Tokens, secret)
+	}
+	if !ok {
+		s.sess.fail(ip)
+		s.log.Warn("failed api token", "ip", ip)
+		httpErr(w, http.StatusUnauthorized, errors.New("invalid API token"))
+		return
+	}
+	write := r.Method != http.MethodGet && r.Method != http.MethodHead
+	if sessionOnly(r.Method, r.URL.Path) {
+		httpErr(w, http.StatusForbidden, errors.New("this needs a logged-in session, not an API token"))
+		return
+	}
+	if write && tok.ReadOnly {
+		httpErr(w, http.StatusForbidden, errors.New("this token is read-only"))
+		return
+	}
+	if write {
+		s.log.Info("api change", "token", tok.Name, "method", r.Method, "path", r.URL.Path, "ip", ip)
+	}
+	next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, "token:"+tok.Name)))
 }
 
 func userOf(r *http.Request) string { u, _ := r.Context().Value(ctxKey{}).(string); return u }

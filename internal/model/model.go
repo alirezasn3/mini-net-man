@@ -37,6 +37,7 @@ type Web struct {
 	Port       int      `yaml:"port" json:"port"`
 	AllowedIPs []string `yaml:"allowed_ips" json:"allowed_ips"` // IPs or CIDRs; empty = nobody
 	Users      []User   `yaml:"users" json:"users"`
+	Tokens     []Token  `yaml:"tokens,omitempty" json:"tokens"` // API tokens for other programs
 	TLSCert    string   `yaml:"tls_cert,omitempty" json:"tls_cert,omitempty"`
 	TLSKey     string   `yaml:"tls_key,omitempty" json:"tls_key,omitempty"`
 }
@@ -44,6 +45,17 @@ type Web struct {
 type User struct {
 	Name         string `yaml:"name" json:"name"`
 	PasswordHash string `yaml:"password_hash" json:"-"`
+}
+
+// Token lets another program use the HTTP API without a login. Only a hash of
+// the secret is kept, so it can't be shown again.
+type Token struct {
+	ID       string `yaml:"id" json:"id"`
+	Name     string `yaml:"name" json:"name"`
+	Hash     string `yaml:"hash" json:"-"` // hex SHA-256 of the token
+	Prefix   string `yaml:"prefix" json:"prefix"`
+	ReadOnly bool   `yaml:"read_only,omitempty" json:"read_only"`
+	Created  string `yaml:"created" json:"created"`
 }
 
 type Sysctl struct {

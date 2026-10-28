@@ -5,13 +5,21 @@
   let web = $state({ listen: '', port: 8080, allowed_ips: '', users: [], tls: false })
   let pw = $state({ old: '', new: '', again: '' })
   let un = $state({ password: '', name: '' })
+  let tokens = $state([])
+  let tk = $state({ name: '', read_only: false, password: '' })
+  let fresh = $state(null) // the token just made: its secret is shown once
+  const origin = location.origin
 
   async function load() {
     const w = await api('GET', '/api/settings/web')
     web = { ...w, allowed_ips: (w.allowed_ips ?? []).join('\n') }
   }
+  async function loadTokens() {
+    tokens = await api('GET', '/api/tokens').catch(() => [])
+  }
   $effect(() => {
     load()
+    loadTokens()
   })
 
   async function saveWeb(e) {
@@ -34,6 +42,32 @@
       load()
     }
   }
+  async function makeToken(e) {
+    e.preventDefault()
+    const r = await act(() => api('POST', '/api/tokens', { name: tk.name, read_only: tk.read_only, password: tk.password }), 'Token created')
+    if (r) {
+      fresh = r
+      tk = { name: '', read_only: false, password: '' }
+      loadTokens()
+    }
+  }
+  async function deleteToken(t) {
+    if (!confirm(`Delete the token "${t.name}"? Anything using it stops working at once.`)) return
+    if (await act(() => api('DELETE', `/api/tokens/${t.id}`), 'Token deleted')) {
+      if (fresh?.id === t.id) fresh = null
+      loadTokens()
+    }
+  }
+  async function copyToken() {
+    try {
+      await navigator.clipboard.writeText(fresh.token)
+      toast('Copied')
+    } catch {
+      toast('Select the token and copy it by hand', 'error')
+    }
+  }
+  const day = (s) => (s ? new Date(s).toLocaleDateString() : '')
+
   let checking = $state(false)
   let installing = $state(false)
   const up = $derived(app.update)
@@ -106,6 +140,48 @@
       <button type="button" class="btn" onclick={logout}>Log out</button>
     </div>
   </form>
+
+  <section class="card space-y-4 p-4 lg:col-span-2">
+    <h2 class="text-sm font-semibold">API tokens</h2>
+    <p class="text-sm text-slate-500">
+      Everything this panel does is also an HTTP API, so other programs can use it. Give each program its own token and send it as
+      <span class="mono">Authorization: Bearer &lt;token&gt;</span>. A <b>read-only</b> token can only look. No token can change logins, tokens or the allowed IPs, or update the program. The caller's address must also be in <b>Allowed client IPs</b>.
+    </p>
+    {#if fresh}
+      <div class="space-y-2 rounded-md border border-accent-600/40 bg-accent-600/10 p-3">
+        <p class="text-sm">Token <b>{fresh.name}</b> is ready. Copy it now: it is not stored and can't be shown again.</p>
+        <div class="flex flex-wrap items-center gap-2">
+          <input class="input mono min-w-0 flex-1" readonly value={fresh.token} aria-label="New token" onfocus={(e) => e.currentTarget.select()} />
+          <button type="button" class="btn btn-sm" onclick={copyToken}>Copy</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick={() => (fresh = null)}>Done</button>
+        </div>
+        <pre class="mono overflow-auto rounded-md bg-slate-950 p-3 text-xs whitespace-pre-wrap">curl -H "Authorization: Bearer {fresh.token}" {origin}/api/routes</pre>
+      </div>
+    {/if}
+    {#if tokens.length}
+      <ul class="divide-y divide-slate-200 text-sm dark:divide-slate-800">
+        {#each tokens as t (t.id)}
+          <li class="flex flex-wrap items-center justify-between gap-2 py-2">
+            <span class="min-w-0">
+              <b>{t.name}</b>
+              <span class="mono ml-2 text-slate-500">{t.prefix}…</span>
+              {#if t.read_only}<span class="badge ml-2 bg-slate-800 text-slate-400">read-only</span>{/if}
+              <span class="ml-2 text-xs text-slate-500">created {day(t.created)}</span>
+            </span>
+            <button class="btn btn-ghost btn-sm text-red-600 dark:text-red-400" onclick={() => deleteToken(t)}>Delete</button>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="text-sm text-slate-500">No tokens yet.</p>
+    {/if}
+    <form class="grid items-end gap-3 sm:grid-cols-[1fr_1fr_auto]" onsubmit={makeToken}>
+      <div><label class="label" for="tkname">Name</label><input id="tkname" class="input" autocomplete="off" placeholder="grafana, backup script" bind:value={tk.name} /></div>
+      <div><label class="label" for="tkpw">Your password</label><input id="tkpw" type="password" autocomplete="current-password" class="input" bind:value={tk.password} /></div>
+      <button class="btn btn-primary">Create token</button>
+      <label class="flex items-center gap-2 text-sm sm:col-span-3"><input type="checkbox" class="size-4 accent-accent-600" bind:checked={tk.read_only} /> Read-only (can look, can't change anything)</label>
+    </form>
+  </section>
 
   <section class="card space-y-3 p-4 lg:col-span-2">
     <div class="flex flex-wrap items-center justify-between gap-2">

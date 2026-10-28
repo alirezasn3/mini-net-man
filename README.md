@@ -5,6 +5,7 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 - **Interfaces & addresses**: see interfaces, add extra IPs.
 - **Routes** and **policy rules**: `ip route … table N` and `ip rule … priority N`, created by hand.
 - **Sorting**: click a column heading on any list (routes, policy rules, firewall rules, …) to sort it ascending, again for descending, a third time to go back. It only changes the view, is remembered in your browser, and never changes the order rules are applied in; moving firewall rules is off while a sort is active.
+- **HTTP API**: everything the panel does is a JSON API that other programs can call with an API token (made in Settings, optionally read-only).
 - **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically. Interface fields take a trailing `*` as a wildcard (`wg*` matches `wg0` and `wgBridge1`). Each chain's default action (accept, drop or reject) is the last row of the rule list and editable there.
 - **MSS clamping**: shrink the TCP segment size of connections passing through, so a tunnel or PPPoE exit with a smaller MTU doesn't stall large transfers (MikroTik's `change-mss` mangle rule).
 - **Connection marking**: tag connections by the interface they arrived on and route replies by that tag, for a machine with several links that carry the same client addresses.
@@ -112,6 +113,35 @@ The **Tuning** page lists settings that matter for a VPN or router box, each wit
 - **Default queue discipline** only affects interfaces that come up after it is set; an existing interface keeps its queue until it is brought down and up.
 - A setting the system won't let it change (read-only `/proc/sys`, as inside some containers) is reported on the page instead of failing the rest.
 - Only the keys in the page's list can be read or written; the API doesn't accept arbitrary sysctls.
+
+## HTTP API
+
+The panel is a thin layer over a JSON API, so any program can do what the panel does. Make a token under **Settings → API tokens** (one per program, so you can revoke one without touching the rest) and send it on every call:
+
+```sh
+curl -H "Authorization: Bearer mnm_..." http://panel:8080/api/routes
+
+curl -X POST -H "Authorization: Bearer mnm_..." -H "Content-Type: application/json" \
+     -d '{"dst":"10.9.0.0/24","dev":"wg0"}' http://panel:8080/api/routes
+```
+
+- The secret is shown once and only its hash is stored. A **read-only** token can use `GET` and nothing else.
+- Tokens can't manage logins or tokens, change the allowed IPs, or install updates; those need a logged-in person. Deleting a token cuts it off immediately.
+- The caller's address must be in **Allowed client IPs**, and wrong tokens count towards the same lockout as wrong passwords (5 in a minute). Changes made with a token are logged with the token's name. Browsers on other sites can't use it (no CORS), which is intended: call it from a server or script. Use TLS (`tls_cert`/`tls_key`) when the token crosses a network you don't trust.
+- Changes apply exactly like in the panel: validated, applied to the kernel, and the reply lists any `issues` that couldn't be applied. Errors are `{"error": "..."}` with a 4xx status.
+
+Lists (`routes`, `rules`, `addresses`, `checks`, `firewall/rules`, `client-routing/clients`) all work the same way: `GET /api/<list>`, `POST` to add (the `id` is made for you), `PUT /api/<list>/{id}` to replace, `DELETE /api/<list>/{id}`, and `POST /api/<list>/{id}/move` with `{"to": index}` to reorder. The JSON fields are the ones in `config.yaml`; the quickest way to see one is to `GET` an existing item.
+
+| Call | What it does |
+|---|---|
+| `GET /api/overview`, `/api/links`, `/api/live/routes`, `/api/live/rules` | what the machine looks like right now |
+| `GET /api/connections`, `/api/sockets` | tracked connections and listening ports |
+| `GET /api/firewall`, `/api/firewall/ruleset`, `PUT /api/firewall/policy` | firewall config, the generated nft ruleset, default actions |
+| `GET`/`PUT /api/client-routing` | client routing on/off and numbering |
+| `GET /api/checks/status` | health check results |
+| `GET /api/tuning`, `PUT /api/tuning/{id}` | kernel settings |
+| `POST /api/reapply` | make the kernel match the config again |
+| `POST /api/safe/start`, `/confirm`, `/cancel` | safe mode: changes revert unless confirmed |
 
 ## IPv6
 
