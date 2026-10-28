@@ -95,8 +95,17 @@ func TestAPIToken(t *testing.T) {
 		t.Errorf("token read: %d", code)
 	}
 	// No JSON content type needed: a token can't be sent cross-site by a browser.
-	if code, out := do("POST", "/api/routes", `{"dst":"10.9.0.0/24","dev":"lo"}`, bearer, nil); code != 200 {
-		t.Errorf("token write: %d %s", code, out)
+	code, out = do("POST", "/api/routes", `{"dst":"10.9.0.0/24","dev":"lo"}`, bearer, nil)
+	var made struct {
+		ID     string `json:"id"`
+		Issues []any  `json:"issues"`
+	}
+	_ = json.Unmarshal([]byte(out), &made)
+	if code != 200 || made.ID == "" || made.Issues == nil {
+		t.Errorf("token write should return the new id and an issues list: %d %s", code, out)
+	}
+	if code, out := do("GET", "/api/routes", "", bearer, nil); !strings.Contains(out, made.ID) {
+		t.Errorf("returned id is not the stored one: %d %s", code, out)
 	}
 	if code, out := do("GET", "/api/routes", "", bearer, nil); !strings.Contains(out, "10.9.0.0/24") {
 		t.Errorf("route not created: %d %s", code, out)

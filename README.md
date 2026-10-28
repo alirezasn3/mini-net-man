@@ -140,26 +140,17 @@ curl -H "Authorization: Bearer mnm_..." http://panel:8080/api/routes
 
 curl -X POST -H "Authorization: Bearer mnm_..." -H "Content-Type: application/json" \
      -d '{"dst":"10.9.0.0/24","dev":"wg0"}' http://panel:8080/api/routes
+# {"id":"13349acc","issues":[]}
 ```
 
-- The secret is shown once and only its hash is stored. A **read-only** token can use `GET` and nothing else.
-- Tokens can't manage logins or tokens, change the allowed IPs, or install updates; those need a logged-in person. Deleting a token cuts it off immediately.
-- The caller's address must be in **Allowed client IPs**, and wrong tokens count towards the same lockout as wrong passwords (5 in a minute). Changes made with a token are logged with the token's name. Browsers on other sites can't use it (no CORS), which is intended: call it from a server or script. Use TLS (`tls_cert`/`tls_key`) when the token crosses a network you don't trust.
-- Changes apply exactly like in the panel: validated, applied to the kernel, and the reply lists any `issues` that couldn't be applied. Errors are `{"error": "..."}` with a 4xx status.
+**[docs/API.md](docs/API.md) is the full reference**: every endpoint, the fields of every item (routes, rules, firewall rules, bridges, ...) with their allowed values, error and `issues` handling, safe mode from a script, and examples in curl and Python.
 
-Lists (`routes`, `rules`, `addresses`, `bridges`, `interfaces`, `checks`, `firewall/rules`, `client-routing/clients`) all work the same way: `GET /api/<list>`, `POST` to add (the `id` is made for you), `PUT /api/<list>/{id}` to replace, `DELETE /api/<list>/{id}`, and `POST /api/<list>/{id}/move` with `{"to": index}` to reorder. The JSON fields are the ones in `config.yaml`; the quickest way to see one is to `GET` an existing item.
+The essentials:
 
-| Call | What it does |
-|---|---|
-| `GET /api/overview`, `/api/links`, `/api/live/routes`, `/api/live/rules` | what the machine looks like right now |
-| `GET /api/links` (with `managed_by`), `/api/network/managers` | interfaces and what manages the network |
-| `GET /api/connections`, `/api/sockets` | tracked connections and listening ports |
-| `GET /api/firewall`, `/api/firewall/ruleset`, `PUT /api/firewall/policy` | firewall config, the generated nft ruleset, default actions |
-| `GET`/`PUT /api/client-routing` | client routing on/off and numbering |
-| `GET /api/checks/status` | health check results |
-| `GET /api/tuning`, `PUT /api/tuning/{id}` | kernel settings |
-| `POST /api/reapply` | make the kernel match the config again |
-| `POST /api/safe/start`, `/confirm`, `/cancel` | safe mode: changes revert unless confirmed |
+- The secret is shown once and only its hash is stored. A **read-only** token can use `GET` and nothing else. No token can manage logins or tokens, change the allowed IPs, or install updates.
+- The caller's address must be in **Allowed client IPs**, and wrong tokens count towards the same lockout as wrong passwords (5 in a minute). Changes made with a token are logged with its name. Browsers on other sites can't call it (no CORS): use it from a server or script, and use TLS (`tls_cert`/`tls_key`) when the token crosses an untrusted network.
+- Every list (`routes`, `rules`, `addresses`, `bridges`, `interfaces`, `checks`, `firewall/rules`, `client-routing/clients`) has the same calls: `GET`, `POST` (returns the new `id`), `PUT /{id}` (replaces the item), `DELETE /{id}` and `POST /{id}/move`.
+- A change is validated first (`400` and nothing saved if it is wrong), then applied. Items the kernel can't apply yet are returned as `issues` and retried.
 
 ## IPv6
 

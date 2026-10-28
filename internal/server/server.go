@@ -70,7 +70,9 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("GET /api/overview", s.overview)
 	authed.HandleFunc("POST /api/password", s.password)
 	authed.HandleFunc("POST /api/username", s.username)
-	authed.HandleFunc("POST /api/reapply", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]any{"issues": s.eng.Reapply()}) })
+	authed.HandleFunc("POST /api/reapply", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"issues": orEmpty(s.eng.Reapply())})
+	})
 
 	authed.HandleFunc("GET /api/links", func(w http.ResponseWriter, r *http.Request) {
 		l, err := s.links()
@@ -647,7 +649,7 @@ func crud[T any](s *Server, mux *http.ServeMux, path string, list func(*model.Co
 			return
 		}
 		*id(&item) = engine.NewID()
-		s.mutate(w, func(c *model.Config) error {
+		s.mutateWith(w, map[string]any{"id": *id(&item)}, func(c *model.Config) error {
 			l := list(c)
 			*l = append(*l, item)
 			return nil
@@ -716,6 +718,12 @@ var errNotFound = errors.New("not found")
 
 // mutate runs a config change and answers with the apply issues.
 func (s *Server) mutate(w http.ResponseWriter, fn func(*model.Config) error) {
+	s.mutateWith(w, nil, fn)
+}
+
+// mutateWith is mutate with extra fields in the answer, such as the id of what
+// was just created.
+func (s *Server) mutateWith(w http.ResponseWriter, extra map[string]any, fn func(*model.Config) error) {
 	issues, err := s.eng.Update(fn)
 	switch {
 	case errors.Is(err, errNotFound):
@@ -726,7 +734,11 @@ func (s *Server) mutate(w http.ResponseWriter, fn func(*model.Config) error) {
 		if issues == nil {
 			issues = []model.Issue{}
 		}
-		writeJSON(w, map[string]any{"issues": issues})
+		out := map[string]any{"issues": issues}
+		for k, v := range extra {
+			out[k] = v
+		}
+		writeJSON(w, out)
 	}
 }
 
