@@ -19,6 +19,7 @@ import (
 	"time"
 
 	goSystemd "github.com/alirezasn3/go-systemd"
+	"github.com/alirezasn3/mini-net-man/internal/dnslist"
 	"github.com/alirezasn3/mini-net-man/internal/engine"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
@@ -164,6 +165,9 @@ func run(args []string) error {
 	}
 
 	eng := engine.New(k, cfg, f.config, log)
+	if f.mock {
+		eng.SetLookup(dnslist.DemoLookup) // no network needed to try domain entries
+	}
 	eng.Start()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

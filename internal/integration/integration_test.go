@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/alirezasn3/mini-net-man/internal/conns"
+	"github.com/alirezasn3/mini-net-man/internal/dnslist"
 	"github.com/alirezasn3/mini-net-man/internal/engine"
 	"github.com/alirezasn3/mini-net-man/internal/health"
 	"github.com/alirezasn3/mini-net-man/internal/importer"
@@ -1548,5 +1550,130 @@ func TestAddressLists(t *testing.T) {
 	set(nil)
 	if out, err := try("nft list sets inet mini-net-man"); err == nil && strings.Contains(out, "seen") {
 		t.Errorf("sets left behind:\n%s", out)
+	}
+}
+
+// TestAddressListDomains puts a domain name in a list. Its address, from a
+// stand-in resolver, ends up in the kernel set with a timeout, blocks real
+// packets, survives a rebuild of the firewall, and leaves with the entry.
+func TestAddressListDomains(t *testing.T) {
+	v := newEnv(t)
+	peer(t)
+	const h4 = "10.55.0.1"
+	v.eng.SetLookup(func(_ context.Context, name string) (dnslist.Result, error) {
+		if name != "evil.example.com" {
+			return dnslist.Result{}, fmt.Errorf("%s does not exist (NXDOMAIN)", name)
+		}
+		return dnslist.Result{Addrs: []netip.Addr{netip.MustParseAddr("10.55.0.2"), netip.MustParseAddr("fd55::2")}, TTL: time.Hour}, nil
+	})
+	if !pingable(h4) {
+		t.Fatal("baseline connectivity is broken")
+	}
+	dyn := func() map[string]int {
+		out := map[string]int{}
+		ds, err := v.k.ListDynamic()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range ds {
+			out[d.List+" "+d.Address] = d.Remaining
+		}
+		return out
+	}
+	set := func(entries ...model.AddressEntry) {
+		for i := range entries {
+			entries[i].ID = fmt.Sprintf("e%d", i)
+		}
+		v.update(t, func(c *model.Config) {
+			c.AddressLists = entries
+			c.Firewall.Rules = []model.FWRule{{ID: "r", Chain: "input", Action: "drop", Proto: "icmp", SrcList: "bad"}}
+		})
+	}
+
+	set(model.AddressEntry{List: "bad", Address: "evil.example.com"}, model.AddressEntry{List: "bad", Address: "192.0.2.0/24"})
+	waitFor(t, 5*time.Second, "the name's addresses in the kernel set", func() bool { _, ok := dyn()["bad 10.55.0.2"]; return ok })
+	if r := dyn()["bad 10.55.0.2"]; r < 3500 || r > 3640 {
+		t.Errorf("remaining = %d, want about the DNS TTL (an hour) plus a little", r)
+	}
+	if pingable(h4) {
+		t.Error("ping from a listed domain's address got through")
+	}
+	contains(t, "static part", sh(t, "nft list set inet mini-net-man bad.s4"), "192.0.2.0/24")
+
+	t.Log("changing the config rebuilds the table; the name's addresses come back")
+	set(model.AddressEntry{List: "bad", Address: "evil.example.com"}, model.AddressEntry{List: "bad", Address: "192.0.2.0/24"}, model.AddressEntry{List: "other", Address: "198.51.100.1"})
+	waitFor(t, 5*time.Second, "addresses after the rebuild", func() bool { _, ok := dyn()["bad 10.55.0.2"]; return ok })
+	if pingable(h4) {
+		t.Error("ping got through after the firewall was rebuilt")
+	}
+
+	t.Log("putting an address that is already there renews it")
+	if err := v.k.AddToList("bad", []netip.Addr{netip.MustParseAddr("10.55.0.2")}, 5*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if r := dyn()["bad 10.55.0.2"]; r < 4*3600 {
+		t.Errorf("remaining after a renew = %d, want about 5 h", r)
+	}
+	if err := v.k.AddToList("nosuchlist", []netip.Addr{netip.MustParseAddr("10.55.0.2")}, time.Minute); err == nil {
+		t.Error("adding to a list that has no sets should say so")
+	}
+
+	t.Log("taking the name out takes its addresses out")
+	set(model.AddressEntry{List: "bad", Address: "192.0.2.0/24"})
+	waitFor(t, 5*time.Second, "the name's addresses to leave", func() bool { _, ok := dyn()["bad 10.55.0.2"]; return !ok })
+	if !pingable(h4) {
+		t.Error("ping still blocked after the name was removed")
+	}
+
+	t.Log("a name that does not resolve is reported and blocks nothing")
+	set(model.AddressEntry{List: "bad", Address: "missing.example.com"})
+	waitFor(t, 5*time.Second, "an error to be reported", func() bool {
+		for _, d := range v.eng.Domains() {
+			if d.Domain == "missing.example.com" && strings.Contains(d.Error, "NXDOMAIN") {
+				return true
+			}
+		}
+		return false
+	})
+	if !pingable(h4) {
+		t.Error("a name that doesn't resolve blocked traffic")
+	}
+}
+
+// A matching rule in mangle-in doesn't end the chain: the rules after it are
+// still checked, and when several mark-connection rules match, the last wins.
+func TestMangleInKeepsGoing(t *testing.T) {
+	v := newEnv(t)
+	peer(t)
+	listen(t, "9000")
+	listen(t, "9001")
+	// markOf connects to a port and reads the mark the kernel gave that connection.
+	markOf := func(port string, rules ...model.FWRule) string {
+		t.Helper()
+		for i := range rules {
+			rules[i].ID = fmt.Sprintf("r%d", i)
+			rules[i].Chain, rules[i].Action, rules[i].Proto, rules[i].DstPort = "mangle-in", "mark-connection", "tcp", port
+		}
+		v.update(t, func(c *model.Config) { c.Firewall.Rules = rules })
+		if !connect("10.55.0.1", port) {
+			t.Fatal("connect failed")
+		}
+		out, err := try("grep 'dport=" + port + " ' /proc/net/nf_conntrack")
+		if err != nil {
+			t.Fatalf("no conntrack entry: %v\n%s", err, out)
+		}
+		for _, f := range strings.Fields(out) {
+			if strings.HasPrefix(f, "mark=") {
+				return strings.TrimPrefix(f, "mark=")
+			}
+		}
+		t.Fatalf("no mark in the connection:\n%s", out)
+		return ""
+	}
+	if got := markOf("9000", model.FWRule{Mark: 100}, model.FWRule{Mark: 200, Src: "10.55.0.2"}); got != "200" {
+		t.Errorf("a general rule then a more specific one: mark = %s, want 200 (the last match wins)", got)
+	}
+	if got := markOf("9001", model.FWRule{Mark: 200, Src: "10.55.0.2"}, model.FWRule{Mark: 100}); got != "100" {
+		t.Errorf("the specific rule first: mark = %s, want 100 (the later rule still ran)", got)
 	}
 }

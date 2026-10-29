@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/alirezasn3/mini-net-man/internal/dnslist"
 	"github.com/alirezasn3/mini-net-man/internal/engine"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 )
@@ -112,5 +114,73 @@ func TestAddressListAPI(t *testing.T) {
 	// A firewall rule can use the list from the API too.
 	if code, out := call("POST", "/api/firewall/rules", `{"chain":"input","action":"drop","src_list":"bl"}`, c); code != 200 {
 		t.Errorf("rule with src_list: %d %s", code, out)
+	}
+}
+
+func TestAddressListDomains(t *testing.T) {
+	cfg, _ := engine.DefaultConfig("correct horse")
+	cfg.Web.AllowedIPs = []string{"127.0.0.1"}
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng := engine.New(kernel.NewMock(), cfg, filepath.Join(t.TempDir(), "config.yaml"), quiet)
+	eng.SetLookup(dnslist.DemoLookup)
+	ts := httptest.NewServer(New(eng, nil, "", true, "test", quiet).Handler())
+	defer ts.Close()
+	call := func(method, p, body string, cookies []*http.Cookie) (int, string) {
+		req, _ := http.NewRequest(method, ts.URL+p, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(b)
+	}
+	req, _ := http.NewRequest("POST", ts.URL+"/api/login", strings.NewReader(`{"username":"admin","password":"correct horse"}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, _ := http.DefaultClient.Do(req)
+	c := res.Cookies()
+
+	if code, out := call("POST", "/api/address-lists", `{"list":"cdn","address":"Example.com"}`, c); code != 200 {
+		t.Fatalf("add a domain: %d %s", code, out)
+	}
+	if code, _ := call("POST", "/api/address-lists", `{"list":"cdn","address":"example.COM."}`, c); code != 400 {
+		t.Errorf("the same name spelled differently: %d", code)
+	}
+	if code, out := call("POST", "/api/address-lists", `{"list":"cdn","address":"not_a domain"}`, c); code != 400 {
+		t.Errorf("junk accepted: %d %s", code, out)
+	}
+	code, out := call("POST", "/api/address-lists/bulk", `{"list":"cdn","addresses":"example.com\nother.example.net # cdn\n10.1.0.0/16"}`, c)
+	var bulk struct{ Added, Skipped int }
+	_ = json.Unmarshal([]byte(out), &bulk)
+	if code != 200 || bulk.Added != 2 || bulk.Skipped != 1 {
+		t.Errorf("bulk with names: %d %s", code, out)
+	}
+	if code, out := call("POST", "/api/address-lists/bulk", `{"list":"cdn","addresses":"fine.example.com\nbad name"}`, c); code != 400 || !strings.Contains(out, "bad") {
+		t.Errorf("bulk with a bad name: %d %s", code, out)
+	}
+
+	var doms []struct {
+		List, Domain string
+		Addresses    []string
+		Error        string
+	}
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		_, out = call("GET", "/api/address-lists/domains", "", c)
+		doms = nil
+		_ = json.Unmarshal([]byte(out), &doms)
+		if len(doms) == 2 && len(doms[0].Addresses) > 0 && len(doms[1].Addresses) > 0 {
+			break
+		}
+	}
+	if len(doms) != 2 || doms[0].Domain != "example.com" || doms[1].Domain != "other.example.net" || len(doms[0].Addresses) != 2 {
+		t.Fatalf("domains: %s", out)
+	}
+	_, out = call("GET", "/api/address-lists/dynamic", "", c)
+	if !strings.Contains(out, `"domain":"example.com"`) {
+		t.Errorf("resolved addresses should say where they came from: %s", out)
 	}
 }

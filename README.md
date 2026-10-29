@@ -94,6 +94,8 @@ Normally the routing table alone decides where a reply goes. If two links carry 
    - chain `mangle-out`, action `restore-mark`. This gives each reply the mark of its connection, and the kernel routes it again with the new mark.
 4. Set `rp_filter` to loose (2) or off under **Tuning**, because packets from `10.0.0.0/16` arrive on a link the main table doesn't point at, and strict mode drops them.
 
+**Rules in `mangle-in` and `mangle-out` don't stop at the first match.** Marking and adding to a list are not verdicts: after one matches, the following rules in the chain are still checked. If several `mark-connection` rules match the same packet, the **last** one wins (it overwrites the mark), so put the general rule first and the more specific one after it. There is no "passthrough: no" (a rule that ends the chain); to keep a packet out of a later rule, make that rule's match exclude it (for example `!` in front of an address list).
+
 Forwarded traffic works the same way: add `restore-mark` to `mangle-in` (after the `mark-connection` rules) so the reply direction of a forwarded connection is routed by the mark too. Marks are also what other tools such as WireGuard's `FwMark` use, so pick numbers that don't clash with them.
 
 ## Interfaces and bridges
@@ -114,7 +116,7 @@ When an interface is claimed by NetworkManager or systemd-networkd **and** by mi
 
 ## Address lists
 
-An address list is a named set of addresses, like MikroTik's `/ip firewall address-list`. On the **Address lists** page each row puts one IP, network (`10.0.0.0/8`) or range (`10.0.0.5-10.0.0.20`) in a list. A list can hold IPv4 and IPv6 together. **Add many at once** takes a pasted blocklist (one entry per line, `#` starts a comment) and is all or nothing, so one typo adds nothing.
+An address list is a named set of addresses, like MikroTik's `/ip firewall address-list`. On the **Address lists** page each row puts one IP, network (`10.0.0.0/8`), range (`10.0.0.5-10.0.0.20`) or **domain name** (`example.com`) in a list. A list can hold IPv4 and IPv6 together. **Add many at once** takes a pasted blocklist (one entry per line, `#` starts a comment) and is all or nothing, so one typo adds nothing.
 
 On the **Firewall** page a rule can use lists:
 
@@ -134,7 +136,8 @@ Within a minute the first new connection puts the sender in `ssh-stage1`, the se
 
 What to know:
 
-- The entries you write are in your config. What rules add is **not**: it lives in the kernel (a set with timeouts), so it is gone after a reboot, and it is shown separately under **Added by rules**, where you can remove one address or empty a list. It stays while you change the firewall; the table is rebuilt with those addresses and their remaining time.
+- **Domain names** are looked up by this machine, using the resolvers in `/etc/resolv.conf`, for both IPv4 (A) and IPv6 (AAAA), following CNAMEs. Their addresses go into the list with a timeout, and the name is looked up again by the DNS TTL (never more often than every 30 seconds, never less often than hourly). An address stays 30 seconds longer than that, so a slow lookup leaves no gap, and it leaves by itself when DNS stops returning it. Each name shows what it resolved to; a name that fails to resolve shows *lookup failed* with the reason and is retried every 30 seconds, backing off to 5 minutes, while the addresses it already has stay until they expire. A name covers **exactly that name**: not its subdomains (add those too), and only the addresses this machine's DNS returns for it. A site that hands different addresses to different places or rotates through many (CDNs) may send your clients to addresses this machine never sees, so a name is a good fit for a handful of stable hosts and a poor one for large CDN-backed sites. Names with non-ASCII letters must be written in punycode (`xn--...`).
+- The entries you write are in your config. What rules add, and the addresses of domain names, are **not**: it lives in the kernel (a set with timeouts), so it is gone after a reboot (names are looked up again within seconds of starting; rules start from nothing), and it is shown separately under **Added by rules and domain names**, where you can remove one address or empty a list. It stays while you change the firewall; the table is rebuilt with those addresses and their remaining time. Taking a name out of a list takes its addresses out at once.
 - Overlapping entries are merged (the kernel refuses overlaps), so `10.0.0.0/24` and `10.0.0.128-10.0.0.200` together are one range. The same range written two ways counts as a duplicate.
 - A rule that names a list nobody has filled just matches nothing (`!list` matches everything).
 - Under the hood each list is four nftables sets (`<name>.s4`, `.s6` for your entries; `.d4`, `.d6` for what rules add). Because one comparison can't ask "in this set or that", a rule that matches a list is written once per set and family: a positive match on a list can be up to four rules in `nft list ruleset`, all with the same action. A dynamic set holds at most 131072 addresses; when it is full, new ones are not added.

@@ -5,6 +5,7 @@
 
   let names = $state([])
   let dynamic = $state([])
+  let domains = $state([])
   let bulk = $state({ list: '', text: '', comment: '', replace: false })
   let busy = $state(false)
   let rev = $state(0) // bumped to make the entries table fetch again
@@ -14,6 +15,7 @@
   }
   async function loadDynamic() {
     dynamic = await api('GET', '/api/address-lists/dynamic').catch(() => [])
+    domains = await api('GET', '/api/address-lists/domains').catch(() => [])
   }
   $effect(() => {
     loadNames()
@@ -49,6 +51,21 @@
     if (await act(() => api('DELETE', '/api/address-lists/dynamic' + (list ? `?list=${encodeURIComponent(list)}` : '')), 'Removed')) loadDynamic()
   }
 
+  // The chip next to a domain entry: what it resolved to, or why it didn't.
+  const domainChip = (e) => {
+    const name = e.address.toLowerCase().replace(/\.$/, '')
+    if (e.disabled || !/[a-z]/.test(name.split('.').pop() ?? '') || !/^[a-z0-9_.-]+$/.test(name)) return null
+    const st = domains.find((d) => d.list === e.list && d.domain === name)
+    if (!st) return { text: 'looking up…', cls: 'bg-slate-800 text-slate-400', title: 'Not looked up yet' }
+    if (st.error && !st.addresses.length) return { text: 'lookup failed', cls: 'bg-red-500/20 text-red-300', title: `${st.error}. Trying again at ${new Date(st.next_at).toLocaleTimeString()}.` }
+    const n = st.addresses.length
+    return {
+      text: `${n} address${n === 1 ? '' : 'es'}`,
+      cls: st.error ? 'bg-amber-500/20 text-amber-300' : 'bg-accent-600/20 text-accent-300',
+      title: `${st.addresses.join(', ')}${st.error ? `\nLast lookup failed: ${st.error}` : ''}\nNext lookup ${new Date(st.next_at).toLocaleTimeString()}`,
+    }
+  }
+
   const left = (n) => (n <= 0 ? 'never' : n >= 86400 ? `${Math.floor(n / 86400)}d ${Math.floor((n % 86400) / 3600)}h` : n >= 3600 ? `${Math.floor(n / 3600)}h ${Math.floor((n % 3600) / 60)}m` : n >= 60 ? `${Math.floor(n / 60)}m ${n % 60}s` : `${n}s`)
   const dynGroups = $derived(
     Object.entries(Object.groupBy(dynamic, (d) => d.list))
@@ -63,7 +80,7 @@
 
 <div class="space-y-5">
   <p class="text-sm text-slate-500">
-    An address list is a named set of addresses, like MikroTik's <span class="mono">/ip firewall address-list</span>. Each row puts one IP, network (<span class="mono">10.0.0.0/8</span>) or range (<span class="mono">10.0.0.5-10.0.0.20</span>) in a list, IPv4 or IPv6; a list can hold both. On the <a class="underline" href="#/firewall">Firewall</a> page a rule can match a list (<b>Source in address list</b>, <b>Destination in address list</b>, with <span class="mono">!</span> for "not in") and can <b>add</b> the source or destination of matching packets to a list for a while, which is how you build things like a blocklist, a whitelist, or "block anyone who tries SSH five times".
+    An address list is a named set of addresses, like MikroTik's <span class="mono">/ip firewall address-list</span>. Each row puts one IP, network (<span class="mono">10.0.0.0/8</span>), range (<span class="mono">10.0.0.5-10.0.0.20</span>) or <b>domain name</b> (<span class="mono">example.com</span>) in a list, IPv4 or IPv6; a list can hold both. A name is looked up by this machine and its addresses stay in the list as long as DNS says they are valid, so they follow the name when it changes. On the <a class="underline" href="#/firewall">Firewall</a> page a rule can match a list (<b>Source in address list</b>, <b>Destination in address list</b>, with <span class="mono">!</span> for "not in") and can <b>add</b> the source or destination of matching packets to a list for a while, which is how you build things like a blocklist, a whitelist, or "block anyone who tries SSH five times".
   </p>
 
   {#key rev}
@@ -73,6 +90,7 @@
     addLabel="Add address"
     groupBy={(e) => e.list}
     pageSize={200}
+    rowBadge={domainChip}
     onchange={changed}
     columns={[
       { key: 'list', label: 'List', mono: true },
@@ -81,7 +99,7 @@
     ]}
     fields={[
       { key: 'list', label: 'List', type: 'text', mono: true, datalist: 'lists', placeholder: 'blocklist', help: 'The name of the list. A new name makes a new list. Start with a letter; letters, digits, _ - and . after that; at most 24 characters.' },
-      { key: 'address', label: 'Address', type: 'text', mono: true, placeholder: '203.0.113.0/24, 198.51.100.5-198.51.100.9, 2001:db8::/32', help: 'One IP, a network, or a range from-to. Entries that overlap are merged for you.' },
+      { key: 'address', label: 'Address', type: 'text', mono: true, placeholder: '203.0.113.0/24, 198.51.100.5-198.51.100.9, example.com', help: 'One IP, a network, a range from-to, or a domain name. A name covers exactly that name, not its subdomains, and only the addresses this machine\u2019s DNS returns for it. Overlapping entries are merged for you.' },
       { key: 'comment', label: 'Comment', type: 'text', wide: true, help: 'Optional note for yourself.' },
     ]}
     blank={() => ({ list: names[0] ?? '', address: '', comment: '', disabled: false })}
@@ -90,7 +108,7 @@
 
   <form class="card space-y-3 p-4" onsubmit={addMany}>
     <h2 class="text-sm font-semibold">Add many at once</h2>
-    <p class="text-sm text-slate-500">Paste a blocklist: one address, network or range per line, or separated by spaces or commas. Everything after <span class="mono">#</span> or <span class="mono">;</span> on a line is ignored. If any entry is invalid nothing is added.</p>
+    <p class="text-sm text-slate-500">Paste a blocklist: one address, network, range or domain name per line, or separated by spaces or commas. Everything after <span class="mono">#</span> or <span class="mono">;</span> on a line is ignored. If any entry is invalid nothing is added.</p>
     <div class="grid gap-3 sm:grid-cols-2">
       <div><label class="label" for="bl-list">List</label><input id="bl-list" class="input mono" list="lists" autocomplete="off" placeholder="blocklist" bind:value={bulk.list} /></div>
       <div><label class="label" for="bl-comment">Comment on each (optional)</label><input id="bl-comment" class="input" autocomplete="off" bind:value={bulk.comment} /></div>
@@ -104,14 +122,14 @@
 
   <section class="card">
     <header class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
-      <h2 class="text-sm font-semibold">Added by rules <span class="ml-1 font-normal text-slate-400">{dynamic.length}</span></h2>
+      <h2 class="text-sm font-semibold">Added by rules and domain names <span class="ml-1 font-normal text-slate-400">{dynamic.length}</span></h2>
       <div class="flex gap-2">
         <button class="btn btn-sm" onclick={loadDynamic}>Refresh</button>
         {#if dynamic.length}<button class="btn btn-sm" onclick={() => flush('')}>Remove all</button>{/if}
       </div>
     </header>
     <div class="space-y-4 p-4 text-sm">
-      <p class="text-slate-500">Addresses that <b>add-src-to-list</b> and <b>add-dst-to-list</b> rules put in a list. They live in the kernel, expire by themselves, and stay while you change the firewall. They are not in your config, so they are gone after a reboot. A rule that matches a list matches these as well as the rows above.</p>
+      <p class="text-slate-500">Addresses that <b>add-src-to-list</b> and <b>add-dst-to-list</b> rules put in a list, and the addresses of the domain names above. They live in the kernel, expire by themselves, and stay while you change the firewall. They are not in your config, so after a reboot rules start again from nothing and names are looked up afresh. A rule that matches a list matches these as well as the rows above.</p>
       {#each dynGroups as g (g.list)}
         <div>
           <div class="mb-1 flex items-center justify-between">
@@ -121,7 +139,7 @@
           <ul class="divide-y divide-slate-200 rounded-md border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
             {#each g.items.slice(0, 100) as d (d.address)}
               <li class="flex items-center justify-between gap-3 px-3 py-1.5">
-                <span class="mono">{d.address}</span>
+                <span class="mono">{d.address}{#if d.domain}<span class="ml-2 text-slate-500">{d.domain}</span>{/if}</span>
                 <span class="flex items-center gap-3 text-slate-500">
                   <span>{d.remaining > 0 ? 'expires in ' + left(d.remaining) : 'does not expire'}</span>
                   <button class="btn btn-ghost btn-sm text-red-600 dark:text-red-400" onclick={() => removeDyn(d)}>Remove</button>

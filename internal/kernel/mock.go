@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"sort"
 	"sync"
@@ -213,6 +214,24 @@ func (m *Mock) ListDynamic() ([]DynAddr, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]DynAddr{}, m.dyn...), nil
+}
+
+func (m *Mock) AddToList(list string, addrs []netip.Addr, timeout time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, a := range addrs {
+		d := DynAddr{List: list, Address: a.String(), Remaining: int(timeout / time.Second)}
+		replaced := false
+		for i := range m.dyn {
+			if m.dyn[i].List == list && m.dyn[i].Address == d.Address {
+				m.dyn[i], replaced = d, true
+			}
+		}
+		if !replaced {
+			m.dyn = append(m.dyn, d)
+		}
+	}
+	return nil
 }
 
 func (m *Mock) DelDynamic(list, address string) error {

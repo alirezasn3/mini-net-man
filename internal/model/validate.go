@@ -278,12 +278,78 @@ func lastAddr(p netip.Prefix) netip.Addr {
 	return a
 }
 
+// IsDomainEntry reports whether an address list entry is a host name rather
+// than an address. A name needs at least two labels and a last label with a
+// letter in it, so "1.2.3.4" and "10.0.0" are never mistaken for names.
+func IsDomainEntry(s string) bool {
+	_, err := ParseDomain(s)
+	return err == nil
+}
+
+// IsAddressEntry reports whether an entry is an IP, network or range.
+func IsAddressEntry(s string) bool {
+	_, _, err := ParseListAddress(s)
+	return err == nil
+}
+
+// ParseDomain checks a host name and returns it in lower case without a
+// trailing dot. Names with non-ASCII letters must be given in punycode
+// (xn--...), which is what DNS carries.
+func ParseDomain(s string) (string, error) {
+	n := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), "."))
+	bad := fmt.Errorf("%q is not an IP address, network, range or domain name", s)
+	if len(n) < 4 || len(n) > 253 {
+		return "", bad
+	}
+	labels := strings.Split(n, ".")
+	if len(labels) < 2 {
+		return "", bad
+	}
+	for _, l := range labels {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return "", bad
+		}
+		for _, r := range l {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+				if r > 127 {
+					return "", fmt.Errorf("%q has non-ASCII characters; write the name in punycode (xn--...)", s)
+				}
+				return "", bad
+			}
+		}
+	}
+	if last := labels[len(labels)-1]; strings.Trim(last, "0123456789") == "" {
+		return "", bad
+	}
+	return n, nil
+}
+
+// ListEntryKey is what an entry covers, in a canonical form: two entries with
+// the same key are duplicates (10.0.0.0/24 and 10.0.0.0-10.0.0.255, or
+// Example.com and example.com.).
+func ListEntryKey(address string) (string, error) {
+	first, last, aerr := ParseListAddress(address)
+	if aerr == nil {
+		return first.String() + "-" + last.String(), nil
+	}
+	n, derr := ParseDomain(address)
+	if derr == nil {
+		return n, nil
+	}
+	// Explain the failure in the terms of what it looks like.
+	t := strings.TrimSpace(address)
+	if t != "" && (strings.ContainsAny(t, "/:") || strings.Trim(t, "0123456789.-") == "") {
+		return "", aerr
+	}
+	return "", derr
+}
+
 // Validate checks one address list entry.
 func (e AddressEntry) Validate() error {
 	if err := ValidListName(e.List); err != nil {
 		return err
 	}
-	_, _, err := ParseListAddress(e.Address)
+	_, err := ListEntryKey(e.Address)
 	return err
 }
 
@@ -569,8 +635,8 @@ func (c *Config) Validate() error {
 		if e.Disabled {
 			continue
 		}
-		first, last, _ := ParseListAddress(e.Address)
-		key := e.List + "|" + first.String() + "-" + last.String()
+		k, _ := ListEntryKey(e.Address)
+		key := e.List + "|" + k
 		if inList[key] {
 			return fmt.Errorf("address list %s already has %s", e.List, e.Address)
 		}

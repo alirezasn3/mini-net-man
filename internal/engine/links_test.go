@@ -1,7 +1,15 @@
 package engine
 
 import (
+	"context"
+	"errors"
+	"net/netip"
+	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/alirezasn3/mini-net-man/internal/dnslist"
 
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
@@ -273,5 +281,107 @@ func TestAddressListsReachTheKernelLayer(t *testing.T) {
 	d := e.Desired()
 	if len(d.Firewall.Lists) != 1 || d.Firewall.Lists[0].Address != "203.0.113.0/24" {
 		t.Errorf("lists in desired firewall: %+v", d.Firewall.Lists)
+	}
+}
+
+func TestDomainEntryValidation(t *testing.T) {
+	one := func(addr string) error {
+		c := model.Config{AddressLists: []model.AddressEntry{{ID: "a", List: "l", Address: addr}}}
+		return c.Validate()
+	}
+	for _, ok := range []string{"example.com", "Example.COM.", "a-b.example.co.uk", "xn--bcher-kva.example", "_dmarc.example.com", "cdn1.example.com"} {
+		if err := one(ok); err != nil {
+			t.Errorf("%q rejected: %v", ok, err)
+		}
+	}
+	for bad, want := range map[string]string{
+		"example":        "not an IP address",
+		"exa mple.com":   "not an IP address",
+		"-bad.example":   "not an IP address",
+		"bücher.example": "punycode",
+		"*.example.com":  "not an IP address",
+		"1.2.3":          "not an IP address", // looks like an address, isn't a name
+		"example..com":   "not an IP address",
+		"http://a.com/x": "not an IP address",
+	} {
+		if err := one(bad); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want an error mentioning %q", bad, err, want)
+		}
+	}
+	// The same name in another spelling is a duplicate; in another list it is not.
+	dup := model.Config{AddressLists: []model.AddressEntry{{ID: "a", List: "l", Address: "example.com"}, {ID: "b", List: "l", Address: "EXAMPLE.com."}}}
+	if dup.Validate() == nil {
+		t.Error("duplicate name accepted")
+	}
+	other := model.Config{AddressLists: []model.AddressEntry{{ID: "a", List: "l", Address: "example.com"}, {ID: "b", List: "m", Address: "example.com"}}}
+	if err := other.Validate(); err != nil {
+		t.Errorf("same name in two lists: %v", err)
+	}
+}
+
+func TestDomainEntriesFillTheList(t *testing.T) {
+	e, k := newTest(t)
+	var mu sync.Mutex
+	answer := []string{"203.0.113.7", "2001:db8::7"}
+	e.SetLookup(func(_ context.Context, name string) (dnslist.Result, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if name != "example.com" {
+			return dnslist.Result{}, errors.New(name + " does not exist (NXDOMAIN)")
+		}
+		var r dnslist.Result
+		r.TTL = time.Hour
+		for _, a := range answer {
+			r.Addrs = append(r.Addrs, netip.MustParseAddr(a))
+		}
+		return r, nil
+	})
+	mustUpdate(t, e, func(c *model.Config) error {
+		c.AddressLists = []model.AddressEntry{
+			{ID: "a", List: "cdn", Address: "example.com"},
+			{ID: "b", List: "cdn", Address: "192.0.2.0/24"},
+			{ID: "c", List: "cdn", Address: "nope.example.org"},
+		}
+		c.Firewall.Rules = []model.FWRule{{ID: "r", Chain: "forward", Action: "drop", DstList: "cdn"}}
+		return nil
+	})
+	has := func(list, addr string) bool {
+		ds, _ := k.ListDynamic()
+		for _, d := range ds {
+			if d.List == list && d.Address == addr {
+				return true
+			}
+		}
+		return false
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !(has("cdn", "203.0.113.7") && has("cdn", "2001:db8::7")) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !has("cdn", "203.0.113.7") || !has("cdn", "2001:db8::7") {
+		ds, _ := k.ListDynamic()
+		t.Fatalf("resolved addresses not in the list: %+v", ds)
+	}
+	labels := e.DomainLabels()
+	if labels["cdn|203.0.113.7"] != "example.com" {
+		t.Errorf("labels: %v", labels)
+	}
+	var failing bool
+	for _, d := range e.Domains() {
+		if d.Domain == "nope.example.org" && strings.Contains(d.Error, "NXDOMAIN") {
+			failing = true
+		}
+	}
+	if !failing {
+		t.Errorf("a name that doesn't resolve should say why: %+v", e.Domains())
+	}
+
+	// Taking the entry out takes its addresses out.
+	mustUpdate(t, e, func(c *model.Config) error { c.AddressLists = c.AddressLists[1:2]; return nil })
+	if has("cdn", "203.0.113.7") {
+		t.Error("addresses of a removed name are still in the list")
+	}
+	if len(e.Domains()) != 0 {
+		t.Errorf("still following: %+v", e.Domains())
 	}
 }

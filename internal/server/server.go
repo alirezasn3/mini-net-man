@@ -101,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	crud(s, authed, "/api/address-lists", func(c *model.Config) *[]model.AddressEntry { return &c.AddressLists }, func(a *model.AddressEntry) *string { return &a.ID })
 	authed.HandleFunc("POST /api/address-lists/bulk", s.listBulk)
 	authed.HandleFunc("GET /api/address-lists/dynamic", s.dynamicList)
+	authed.HandleFunc("GET /api/address-lists/domains", s.domainList)
 	authed.HandleFunc("DELETE /api/address-lists/dynamic", s.dynamicDelete)
 	crud(s, authed, "/api/bridges", func(c *model.Config) *[]model.Bridge { return &c.Bridges }, func(a *model.Bridge) *string { return &a.ID })
 	crud(s, authed, "/api/interfaces", func(c *model.Config) *[]model.LinkSetting { return &c.Interfaces }, func(a *model.LinkSetting) *string { return &a.ID })

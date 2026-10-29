@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alirezasn3/mini-net-man/internal/dnslist"
 	"github.com/alirezasn3/mini-net-man/internal/health"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
@@ -35,7 +36,8 @@ type Engine struct {
 	lastBridges  map[string]bridgeState
 	safe         *safeSession
 
-	mon *health.Monitor // pings for the health checks rules can depend on
+	mon *health.Monitor   // pings for the health checks rules can depend on
+	res *dnslist.Resolver // keeps the addresses of domain names in address lists
 }
 
 type safeSession struct {
@@ -54,6 +56,7 @@ type SafeStatus struct {
 func New(k kernel.Kernel, cfg model.Config, path string, log *slog.Logger) *Engine {
 	e := &Engine{k: k, cfg: cfg, path: path, log: log}
 	e.mon = health.New(k, e.healthChanged)
+	e.res = dnslist.New(k, dnslist.SystemLookup, log)
 	return e
 }
 
@@ -144,6 +147,7 @@ func (e *Engine) Run(ctx context.Context) {
 	var recent []time.Time // event-driven reconciles that really changed something
 	wait, nextRetry := retryMin, time.Time{}
 	defer e.mon.Stop()
+	defer e.res.Close()
 	for {
 		select {
 		case <-ctx.Done():
@@ -237,6 +241,17 @@ func (e *Engine) Converge() int {
 	defer e.mu.Unlock()
 	return e.applyLocked(false)
 }
+
+// SetLookup changes how domain names in address lists are resolved (the
+// default asks the system's resolvers). For tests and the mock kernel.
+func (e *Engine) SetLookup(l dnslist.Lookup) { e.res.SetLookup(l) }
+
+// Domains reports each domain name in an address list: what it resolved to,
+// when it is looked up next, and why it failed if it did.
+func (e *Engine) Domains() []dnslist.Status { return e.res.Statuses() }
+
+// DomainLabels maps "list|address" to the name an address in a list came from.
+func (e *Engine) DomainLabels() map[string]string { return e.res.Labels() }
 
 // Desired returns the expanded desired state (manual + generated items).
 func (e *Engine) Desired() Desired {
@@ -478,13 +493,21 @@ func (e *Engine) applyLocked(force bool) int {
 
 	// Firewall: replaced atomically as one table.
 	text := kernel.RenderNFT(d.Firewall)
+	rebuilt := false
 	if force || text != e.lastNFT {
 		if err := e.k.ApplyFirewall(d.Firewall); err != nil {
 			add("firewall", "", err)
 		} else {
 			muts++
 			e.lastNFT = text
+			rebuilt = true
 		}
+	}
+	// Domain names in address lists. After the firewall, so the lists' sets
+	// exist; and after a rebuild they are new and empty, so refill them.
+	e.res.Sync(d.Firewall.Lists)
+	if rebuilt {
+		e.res.Kick()
 	}
 
 	// Byte counting is a conntrack setting, which only exists once something

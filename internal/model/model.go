@@ -91,8 +91,10 @@ type Address struct {
 type AddressEntry struct {
 	ID   string `yaml:"id" json:"id"`
 	List string `yaml:"list" json:"list"`
-	// Address is an IP, a network (10.0.0.0/8) or a range (10.0.0.5-10.0.0.20),
-	// IPv4 or IPv6. A list can hold both families.
+	// Address is an IP, a network (10.0.0.0/8), a range (10.0.0.5-10.0.0.20) or
+	// a domain name (example.com), IPv4 or IPv6. A list can hold both families.
+	// A name is looked up regularly and its addresses put in the list for as
+	// long as DNS says they are valid.
 	Address  string `yaml:"address" json:"address"`
 	Comment  string `yaml:"comment,omitempty" json:"comment"`
 	Disabled bool   `yaml:"disabled,omitempty" json:"disabled"`

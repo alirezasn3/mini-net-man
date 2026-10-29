@@ -5,6 +5,7 @@ package kernel
 
 import (
 	"context"
+	"net/netip"
 	"time"
 
 	"github.com/alirezasn3/mini-net-man/internal/model"
@@ -74,6 +75,11 @@ type Kernel interface {
 	ListDynamic() ([]DynAddr, error)
 	DelDynamic(list, address string) error
 	FlushDynamic(list string) error
+	// AddToList puts addresses in a list's dynamic sets, each living for
+	// timeout (an address already there gets the new time). It is how domain
+	// entries are filled in. The list's sets must exist, which they do once the
+	// firewall has been applied with an entry or rule that names the list.
+	AddToList(list string, addrs []netip.Addr, timeout time.Duration) error
 
 	// IPForward and SetIPForward read and write net.ipv4.ip_forward, or
 	// net.ipv6.conf.all.forwarding when v6 is true.

@@ -41,6 +41,9 @@ type DynAddr struct {
 	Address string `json:"address"`
 	// Remaining is the seconds until it expires, or 0 when it has no expiry.
 	Remaining int `json:"remaining"`
+	// Domain is the name it was resolved from, when it came from a domain entry
+	// rather than a rule. Filled in by the engine, not the kernel.
+	Domain string `json:"domain,omitempty"`
 }
 
 type rng struct{ first, last netip.Addr }

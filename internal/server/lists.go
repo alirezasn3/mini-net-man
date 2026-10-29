@@ -11,13 +11,13 @@ import (
 )
 
 // listKey identifies what an entry covers, so 10.0.0.0/24 and 10.0.0.0-10.0.0.255
-// count as the same entry.
+// (or Example.com and example.com.) count as the same entry.
 func listKey(list, address string) (string, bool) {
-	a, b, err := model.ParseListAddress(address)
+	k, err := model.ListEntryKey(address)
 	if err != nil {
 		return "", false
 	}
-	return list + "|" + a.String() + "-" + b.String(), true
+	return list + "|" + k, true
 }
 
 // parseAddresses reads a pasted list: one entry per line or separated by
@@ -80,7 +80,7 @@ func (s *Server) listBulk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(bad) > 0 {
-		httpErr(w, http.StatusBadRequest, fmt.Errorf("nothing was added; these are not valid addresses, networks or ranges: %s", strings.Join(bad, ", ")))
+		httpErr(w, http.StatusBadRequest, fmt.Errorf("nothing was added; these are not valid addresses, networks, ranges or domain names: %s", strings.Join(bad, ", ")))
 		return
 	}
 	var added, skipped int
@@ -117,7 +117,17 @@ func (s *Server) listBulk(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) dynamicList(w http.ResponseWriter, r *http.Request) {
 	d, err := s.eng.Kernel().ListDynamic()
+	labels := s.eng.DomainLabels()
+	for i := range d {
+		d[i].Domain = labels[d[i].List+"|"+d[i].Address]
+	}
 	respond(w, orEmpty(d), err)
+}
+
+// domainList reports the domain names in address lists: what each resolved to
+// and when it is looked up next, or why it couldn't be.
+func (s *Server) domainList(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.eng.Domains())
 }
 
 // dynamicDelete removes one address (list and address given), empties a list

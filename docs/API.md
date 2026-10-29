@@ -119,18 +119,21 @@ One row per entry, like MikroTik's address lists. Rows with the same `list` form
 | Field | Meaning |
 |---|---|
 | `list` | The list's name: starts with a letter, then letters, digits, `_`, `-` or `.`; at most 24 characters. A new name makes a new list. Required. |
-| `address` | An IP (`10.0.0.1`, `2001:db8::1`), a network (`10.0.0.0/8`) or an inclusive range (`10.0.0.5-10.0.0.20`). Required. A list can hold IPv4 and IPv6. |
+| `address` | An IP (`10.0.0.1`, `2001:db8::1`), a network (`10.0.0.0/8`), an inclusive range (`10.0.0.5-10.0.0.20`) or a **domain name** (`example.com`; ASCII, so internationalised names in punycode `xn--...`; stored as typed, compared in lower case without a trailing dot). Required. A list can hold IPv4 and IPv6. |
 | `comment`, `disabled` | |
 
-Entries covering the same addresses in the same list are rejected as duplicates (`10.0.0.0/24` and `10.0.0.0-10.0.0.255` are the same entry). Overlapping entries are fine; they are merged when applied.
+Entries covering the same addresses in the same list are rejected as duplicates (`10.0.0.0/24` and `10.0.0.0-10.0.0.255` are the same entry; so are `Example.com` and `example.com.`). Overlapping entries are fine; they are merged when applied.
+
+A **domain name** entry is looked up by the machine (A and AAAA, through the resolvers in `/etc/resolv.conf`), and the addresses it returns are put in the list with a timeout of the DNS TTL plus 30 seconds (the TTL is held between 30 seconds and one hour). The name is looked up again when the TTL is up, and addresses leave on their own once DNS stops returning them. A name covers exactly that name, not its subdomains. Those addresses live in the kernel, like the ones rules add (below), not in `config.yaml`.
 
 Two more calls work on lists:
 
 | Call | Does |
 |---|---|
-| `POST /api/address-lists/bulk` | Adds many entries at once. Body `{"list": "blocklist", "addresses": "...", "comment": "", "replace": false}`. `addresses` is text (one entry per line or separated by spaces or commas, `#` or `;` starts a comment) or an array of strings. With `replace` the list's current entries are removed first. Returns `{"added": 4, "skipped": 2, "issues": []}` (`skipped` are ones already there). All or nothing: one invalid entry is a `400` naming it, and nothing changes. |
-| `GET /api/address-lists/dynamic` | The addresses that `add-src-to-list` and `add-dst-to-list` rules have put in lists: `[{"list": "ssh-blocked", "address": "198.51.100.23", "remaining": 86100}]`. `remaining` is the seconds left, or `0` for an entry that doesn't expire. These live in the kernel, not in `config.yaml`. |
-| `DELETE /api/address-lists/dynamic?list=NAME&address=IP` | Removes one such address. With only `list`, empties that list's added addresses; with neither, empties all of them. |
+| `POST /api/address-lists/bulk` | Adds many entries at once. Body `{"list": "blocklist", "addresses": "...", "comment": "", "replace": false}`. `addresses` is text (one address, network, range or domain name per line or separated by spaces or commas, `#` or `;` starts a comment) or an array of strings. With `replace` the list's current entries are removed first. Returns `{"added": 4, "skipped": 2, "issues": []}` (`skipped` are ones already there). All or nothing: one invalid entry is a `400` naming it, and nothing changes. |
+| `GET /api/address-lists/dynamic` | The addresses in lists that did not come from your entries: what `add-src-to-list` and `add-dst-to-list` rules put there, and what domain names resolved to: `[{"list": "ssh-blocked", "address": "198.51.100.23", "remaining": 86100}, {"list": "cdn", "address": "203.0.113.7", "remaining": 330, "domain": "example.com"}]`. `remaining` is the seconds left, or `0` for an entry that doesn't expire; `domain` is set when the address came from a name. These live in the kernel, not in `config.yaml`. |
+| `GET /api/address-lists/domains` | One item per domain name entry: `{"list", "domain", "addresses": [...], "resolved_at", "next_at", "error"}`. `resolved_at` is empty until the first answer; `error` says why the last lookup failed (the addresses it already has stay until they expire). |
+| `DELETE /api/address-lists/dynamic?list=NAME&address=IP` | Removes one such address. With only `list`, empties that list's added addresses; with neither, empties all of them. A resolved address you remove comes back at the name's next lookup; delete the entry to stop it. |
 
 ### Routes: `/api/routes`
 
@@ -186,7 +189,7 @@ One nftables table, `inet mini-net-man`, replaced atomically on every change. A 
 | `timeout` (number) | For those actions: seconds the address stays, 0 to 31536000. `0` keeps it until removed; seeing it again restarts the time. |
 | `comment`, `disabled` | |
 
-Which actions go in which chain: `masquerade` and `snat` in `srcnat`; `dnat` in `dstnat`; `clamp-mss` only in `mangle`; marking and the add-to-list actions in `mangle-in` and `mangle-out` (the add actions work in every chain except `mangle`). The add-to-list actions don't stop the packet: later rules still see it, as in MikroTik. The server explains a mismatch in the `400`. `GET /api/firewall/ruleset` shows the generated nft text.
+Which actions go in which chain: `masquerade` and `snat` in `srcnat`; `dnat` in `dstnat`; `clamp-mss` only in `mangle`; marking and the add-to-list actions in `mangle-in` and `mangle-out` (the add actions work in every chain except `mangle`). The add-to-list actions don't stop the packet: later rules still see it, as in MikroTik. The same goes for `mark-connection` and `restore-mark`: no rule in `mangle-in` or `mangle-out` ends the chain, so when several marking rules match the last one wins. The server explains a mismatch in the `400`. `GET /api/firewall/ruleset` shows the generated nft text.
 
 ### Bridges: `/api/bridges`
 

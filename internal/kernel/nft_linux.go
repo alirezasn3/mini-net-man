@@ -196,6 +196,54 @@ func (Linux) ListDynamic() ([]DynAddr, error) {
 	return out, nil
 }
 
+// AddToList puts addresses in a list's dynamic sets with a timeout. An address
+// that is already there is replaced, which is how its time is renewed.
+func (Linux) AddToList(list string, addrs []netip.Addr, timeout time.Duration) error {
+	c, err := nftables.New()
+	if err != nil {
+		return err
+	}
+	defer c.CloseLasting()
+	sets := map[string]*nftables.Set{}
+	for _, s := range dynamicSets(c) {
+		sets[s.Name] = s
+	}
+	byFam := map[bool][]netip.Addr{}
+	for _, a := range addrs {
+		byFam[a.Is6()] = append(byFam[a.Is6()], a.Unmap())
+	}
+	for v6, as := range byFam {
+		set := sets[SetName(list, v6, true)]
+		if set == nil {
+			return fmt.Errorf("list %s has no sets yet; the firewall hasn't been applied with it", list)
+		}
+		have := map[netip.Addr]bool{}
+		if els, err := c.GetSetElements(set); err == nil {
+			for _, e := range els {
+				if a, ok := netip.AddrFromSlice(e.Key); ok {
+					have[a] = true
+				}
+			}
+		}
+		var del, add []nftables.SetElement
+		for _, a := range as {
+			if have[a] {
+				del = append(del, nftables.SetElement{Key: a.AsSlice()})
+			}
+			add = append(add, nftables.SetElement{Key: a.AsSlice(), Timeout: timeout})
+		}
+		if len(del) > 0 {
+			if err := c.SetDeleteElements(set, del); err != nil {
+				return err
+			}
+		}
+		if err := c.SetAddElements(set, add); err != nil {
+			return err
+		}
+	}
+	return c.Flush()
+}
+
 // DelDynamic removes one address a rule added to a list.
 func (Linux) DelDynamic(list, address string) error {
 	a, err := netip.ParseAddr(address)
