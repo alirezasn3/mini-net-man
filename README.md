@@ -116,7 +116,7 @@ When an interface is claimed by NetworkManager or systemd-networkd **and** by mi
 
 ## Address lists
 
-An address list is a named set of addresses, like MikroTik's `/ip firewall address-list`. On the **Address lists** page each row puts one IP, network (`10.0.0.0/8`), range (`10.0.0.5-10.0.0.20`) or **domain name** (`example.com`) in a list. A list can hold IPv4 and IPv6 together. **Add many at once** takes a pasted blocklist (one entry per line, `#` starts a comment) and is all or nothing, so one typo adds nothing.
+An address list is a named set of addresses, like MikroTik's `/ip firewall address-list`. On the **Address lists** page each row puts one IP, network (`10.0.0.0/8`), range (`10.0.0.5-10.0.0.20`) or **domain name** (`example.com`) in a list. A list can hold IPv4 and IPv6 together. The entries table has a **search box** (every word you type has to appear in the row: list, address, comment, name) and a **checkbox on every row**: tick rows (Shift-click ticks a range, the header box ticks what is shown, *Select all N matching* reaches past the first 200), then **Delete N**, which removes them all in one go. Searching again clears the ticks, so a row you can't see is never deleted by accident. **Add many at once** takes a pasted blocklist (one entry per line, `#` starts a comment) and is all or nothing, so one typo adds nothing.
 
 On the **Firewall** page a rule can use lists:
 

@@ -66,7 +66,7 @@ The panel itself uses a cookie session from `POST /api/login` (`{"username": "..
 
 `kind` is one of `address`, `route`, `rule`, `firewall`, `sysctl`, `bridge`, `interface`. Items that couldn't be applied are retried automatically with a growing delay, and again whenever the kernel's interfaces, addresses or routes change. The current list is also in `GET /api/overview` under `issues`.
 
-**Lists.** Items you manage all share the same five calls (`<list>` is `routes`, `rules`, `addresses`, `address-lists`, `bridges`, `interfaces`, `checks`, `firewall/rules` or `client-routing/clients`):
+**Lists.** Items you manage all share the same calls (`<list>` is `routes`, `rules`, `addresses`, `address-lists`, `bridges`, `interfaces`, `checks`, `firewall/rules` or `client-routing/clients`):
 
 | Call | What it does |
 |---|---|
@@ -74,6 +74,7 @@ The panel itself uses a cookie session from `POST /api/login` (`{"username": "..
 | `POST /api/<list>` | Adds one to the end. The `id` is chosen for you and returned: `{"id": "...", "issues": []}`. |
 | `PUT /api/<list>/{id}` | **Replaces** the item. Send the complete item; a field you leave out goes back to its default. Returns `{"issues": []}`. |
 | `DELETE /api/<list>/{id}` | Removes it. Returns `{"issues": []}`. |
+| `POST /api/<list>/delete` | Body `{"ids": ["...", "..."]}`: removes all of them in one change, so the kernel is updated once, not once per item (use it for hundreds). Unknown ids are ignored. Returns `{"removed": 3, "issues": []}`; `404` if none of the ids exist, `400` if the list is empty. |
 | `POST /api/<list>/{id}/move` | Body `{"to": 0}`: moves it to that position (0 is first; a too-large number means last). Order matters for firewall rules (each chain runs top to bottom). |
 
 To change one field, `GET` the item, change it and `PUT` it back. Setting `"disabled": true` keeps an item in the config but not in the kernel.

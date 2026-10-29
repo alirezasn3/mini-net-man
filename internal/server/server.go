@@ -692,6 +692,42 @@ func crud[T any](s *Server, mux *http.ServeMux, path string, list func(*model.Co
 			return errNotFound
 		})
 	})
+	// Several at once, applied in one go: deleting hundreds one by one would
+	// rebuild the kernel state for each.
+	mux.HandleFunc("POST "+path+"/delete", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			IDs []string `json:"ids"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		if len(in.IDs) == 0 {
+			httpErr(w, http.StatusBadRequest, errors.New("no ids given"))
+			return
+		}
+		drop := map[string]bool{}
+		for _, x := range in.IDs {
+			drop[x] = true
+		}
+		removed := 0
+		s.mutateWith(w, nil, func(c *model.Config) error {
+			l := list(c)
+			kept := make([]T, 0, len(*l))
+			removed = 0
+			for i := range *l {
+				if drop[*id(&(*l)[i])] {
+					removed++
+				} else {
+					kept = append(kept, (*l)[i])
+				}
+			}
+			if removed == 0 {
+				return errNotFound
+			}
+			*l = kept
+			return nil
+		}, func(out map[string]any) { out["removed"] = removed })
+	})
 	mux.HandleFunc("POST "+path+"/{id}/move", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			To int `json:"to"`

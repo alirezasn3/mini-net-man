@@ -90,6 +90,8 @@
     addLabel="Add address"
     groupBy={(e) => e.list}
     pageSize={200}
+    searchable
+    selectable
     rowBadge={domainChip}
     onchange={changed}
     columns={[

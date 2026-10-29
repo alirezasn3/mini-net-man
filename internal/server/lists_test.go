@@ -184,3 +184,69 @@ func TestAddressListDomains(t *testing.T) {
 		t.Errorf("resolved addresses should say where they came from: %s", out)
 	}
 }
+
+func TestDeleteSeveralAtOnce(t *testing.T) {
+	cfg, _ := engine.DefaultConfig("correct horse")
+	cfg.Web.AllowedIPs = []string{"127.0.0.1"}
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng := engine.New(kernel.NewMock(), cfg, filepath.Join(t.TempDir(), "config.yaml"), quiet)
+	ts := httptest.NewServer(New(eng, nil, "", true, "test", quiet).Handler())
+	defer ts.Close()
+	call := func(method, p, body string, cookies []*http.Cookie) (int, string) {
+		req, _ := http.NewRequest(method, ts.URL+p, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(b)
+	}
+	req, _ := http.NewRequest("POST", ts.URL+"/api/login", strings.NewReader(`{"username":"admin","password":"correct horse"}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, _ := http.DefaultClient.Do(req)
+	c := res.Cookies()
+
+	call("POST", "/api/address-lists/bulk", `{"list":"bl","addresses":"10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5"}`, c)
+	var all []struct{ ID, Address string }
+	_, out := call("GET", "/api/address-lists", "", c)
+	_ = json.Unmarshal([]byte(out), &all)
+	if len(all) != 5 {
+		t.Fatalf("setup: %s", out)
+	}
+	ids := `["` + all[0].ID + `","` + all[2].ID + `","` + all[3].ID + `","nosuchid"]`
+	code, out := call("POST", "/api/address-lists/delete", `{"ids":`+ids+`}`, c)
+	var got struct {
+		Removed int
+		Issues  []any
+	}
+	_ = json.Unmarshal([]byte(out), &got)
+	if code != 200 || got.Removed != 3 || got.Issues == nil {
+		t.Errorf("delete: %d %s", code, out)
+	}
+	if left := eng.Config().AddressLists; len(left) != 2 || left[0].ID != all[1].ID || left[1].ID != all[4].ID {
+		t.Errorf("wrong entries left, or order changed: %+v", left)
+	}
+	if code, _ := call("POST", "/api/address-lists/delete", `{"ids":["nosuchid"]}`, c); code != 404 {
+		t.Errorf("only unknown ids: %d", code)
+	}
+	if code, _ := call("POST", "/api/address-lists/delete", `{"ids":[]}`, c); code != 400 {
+		t.Errorf("no ids: %d", code)
+	}
+	// Every list has it.
+	call("POST", "/api/routes", `{"dst":"10.9.0.0/24","dev":"lo"}`, c)
+	call("POST", "/api/routes", `{"dst":"10.9.1.0/24","dev":"lo"}`, c)
+	var routes []struct{ ID string }
+	_, out = call("GET", "/api/routes", "", c)
+	_ = json.Unmarshal([]byte(out), &routes)
+	if code, out := call("POST", "/api/routes/delete", `{"ids":["`+routes[0].ID+`","`+routes[1].ID+`"]}`, c); code != 200 || !strings.Contains(out, `"removed":2`) {
+		t.Errorf("routes: %d %s", code, out)
+	}
+	if n := len(eng.Config().Routes); n != 0 {
+		t.Errorf("%d routes left", n)
+	}
+}
