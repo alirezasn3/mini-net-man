@@ -56,6 +56,7 @@ func chainPolicy(c chainDef, fw model.Firewall) (policy string, finalReject bool
 func RenderNFT(fw model.Firewall) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "table inet %s {\n", TableName)
+	renderSets(&b, fw)
 	for _, c := range chainDefs {
 		pol, finalReject := chainPolicy(c, fw)
 		fmt.Fprintf(&b, "\tchain %s {\n\t\ttype %s hook %s priority %d; policy %s;\n", c.name, c.ctype, c.hook, c.prio, pol)
@@ -77,6 +78,33 @@ func RenderNFT(fw model.Firewall) string {
 	return b.String()
 }
 
+// renderSets writes the sets behind the address lists.
+func renderSets(b *strings.Builder, fw model.Firewall) {
+	ranges := listRanges(fw.Lists)
+	for _, name := range listNames(fw) {
+		for _, v6 := range []bool{false, true} {
+			typ := "ipv4_addr"
+			if v6 {
+				typ = "ipv6_addr"
+			}
+			static := SetName(name, v6, false)
+			fmt.Fprintf(b, "\tset %s {\n\t\ttype %s\n\t\tflags interval\n", static, typ)
+			if rs := ranges[static]; len(rs) > 0 {
+				items := make([]string, len(rs))
+				for i, r := range rs {
+					items[i] = r.first.String()
+					if r.first != r.last {
+						items[i] += "-" + r.last.String()
+					}
+				}
+				fmt.Fprintf(b, "\t\telements = { %s }\n", strings.Join(items, ", "))
+			}
+			b.WriteString("\t}\n")
+			fmt.Fprintf(b, "\tset %s {\n\t\ttype %s\n\t\tsize %d\n\t\tflags dynamic,timeout\n\t}\n", SetName(name, v6, true), typ, DynSetSize)
+		}
+	}
+}
+
 func splitPorts(s string) []string {
 	if s == "" {
 		return []string{""}
@@ -92,10 +120,18 @@ func renderRule(r model.FWRule) []string {
 	if r.Action == model.ActionClampMSS {
 		r.Proto = "tcp"
 	}
+	var out []string
+	for _, v := range ruleVariants(r) {
+		out = append(out, renderVariant(r, v)...)
+	}
+	return out
+}
+
+func renderVariant(r model.FWRule, v ruleVariant) []string {
 	var head []string
-	fam := r.EffFamily()
+	fam := v.fam
 	// An address match already pins the family in nft syntax; otherwise say it.
-	if fam != "" && r.Src == "" && r.Dst == "" && r.ToAddr == "" {
+	if fam != "" && r.Src == "" && r.Dst == "" && r.ToAddr == "" && len(v.src) == 0 && len(v.dst) == 0 && v.add == "" {
 		head = append(head, "meta nfproto "+fam)
 	}
 	ipw := map[string]string{"ipv4": "ip", "ipv6": "ip6"}[fam]
@@ -110,6 +146,12 @@ func renderRule(r model.FWRule) []string {
 	}
 	if r.Dst != "" {
 		head = append(head, ipw+" daddr "+normNet(r.Dst))
+	}
+	for _, l := range v.src {
+		head = append(head, ipw+" saddr "+neq(l.not)+"@"+l.name)
+	}
+	for _, l := range v.dst {
+		head = append(head, ipw+" daddr "+neq(l.not)+"@"+l.name)
 	}
 	hasPorts := (r.Proto == "tcp" || r.Proto == "udp") && (r.SrcPort != "" || r.DstPort != "")
 	switch r.Proto {
@@ -138,6 +180,15 @@ func renderRule(r model.FWRule) []string {
 		tail = append(tail, fmt.Sprintf("ct mark set %d meta mark set %d", r.Mark, r.Mark))
 	case model.ActionRestoreMark:
 		tail = append(tail, "ct mark != 0 meta mark set ct mark")
+	case model.ActionAddSrcToList, model.ActionAddDstToList:
+		field := ipw + " saddr"
+		if r.Action == model.ActionAddDstToList {
+			field = ipw + " daddr"
+		}
+		if r.Timeout > 0 {
+			field += fmt.Sprintf(" timeout %ds", r.Timeout)
+		}
+		tail = append(tail, fmt.Sprintf("update @%s { %s }", v.add, field))
 	case "masquerade":
 		tail = append(tail, "masquerade")
 	case "dnat", "snat":
@@ -173,6 +224,13 @@ func renderRule(r model.FWRule) []string {
 		}
 	}
 	return out
+}
+
+func neq(not bool) string {
+	if not {
+		return "!= "
+	}
+	return ""
 }
 
 func normNet(s string) string {

@@ -6,6 +6,7 @@
   import Routes from './pages/Routes.svelte'
   import Rules from './pages/Rules.svelte'
   import Firewall from './pages/Firewall.svelte'
+  import AddressLists from './pages/AddressLists.svelte'
   import Ports from './pages/Ports.svelte'
   import Connections from './pages/Connections.svelte'
   import Tuning from './pages/Tuning.svelte'
@@ -19,6 +20,7 @@
     { path: 'routes', label: 'Routes', comp: Routes },
     { path: 'rules', label: 'Policy rules', comp: Rules },
     { path: 'firewall', label: 'Firewall', comp: Firewall },
+    { path: 'address-lists', label: 'Address lists', comp: AddressLists },
     { path: 'ports', label: 'Ports', comp: Ports },
     { path: 'connections', label: 'Connections', comp: Connections },
     { path: 'tuning', label: 'Tuning', comp: Tuning },

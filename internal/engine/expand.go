@@ -99,6 +99,11 @@ func Expand(cfg model.Config, ifaceNets func(iface string) []string, down func(c
 	}
 	d.Rules = append(d.Rules, checkRoutes(cfg.Checks)...)
 	d.Firewall.Policy = cfg.Firewall.Policy
+	for _, e := range cfg.AddressLists {
+		if !e.Disabled {
+			d.Firewall.Lists = append(d.Firewall.Lists, e)
+		}
+	}
 	for _, r := range cfg.Firewall.Rules {
 		if !r.Disabled {
 			d.Firewall.Rules = append(d.Firewall.Rules, r)

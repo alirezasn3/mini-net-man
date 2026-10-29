@@ -12,7 +12,8 @@
     orderable = false,
     sort = null,
     groupBy = null, // (item) => string: keep rows of a group together, with a gap between groups
-    groupOrder = [], // order of the groups; unlisted ones go last
+    groupOrder = [], // order of the groups; unlisted ones go last, by name
+    pageSize = 0, // show this many rows, then a button for the rest; 0 shows all
     generated = [],
     rowBadge = null, // (item) => { text, cls, title } | null: a status chip beside the first column
     defaults = [], // rows for each chain's default action: editable, but not deletable or movable
@@ -65,13 +66,15 @@
   }
   // Array.sort is stable, so equal rows keep their list order.
   const shown = $derived(
-    sortCol ? [...items].sort(byColumn(sortCol, sortDir)) : groupBy ? [...items].sort((a, b) => rank(a) - rank(b)) : sort ? [...items].sort(sort) : items,
+    sortCol ? [...items].sort(byColumn(sortCol, sortDir)) : groupBy ? [...items].sort((a, b) => rank(a) - rank(b) || (rank(a) === groupOrder.length ? String(groupBy(a)).localeCompare(String(groupBy(b))) : 0)) : sort ? [...items].sort(sort) : items,
   )
+  let showAll = $state(false)
+  const visible = $derived(pageSize && !showAll ? shown.slice(0, pageSize) : shown)
   const grouped = $derived(groupBy && !sortCol)
-  const gap = (i) => grouped && i > 0 && groupBy(shown[i]) !== groupBy(shown[i - 1])
+  const gap = (i) => grouped && i > 0 && groupBy(visible[i]) !== groupBy(visible[i - 1])
   // Rows only move within their group; the server wants the neighbour's place in the whole list.
-  const canMove = (i, d) => !sortCol && shown[i + d] && (!groupBy || groupBy(shown[i + d]) === groupBy(shown[i]))
-  const moveBy = (i, d) => move(shown[i], items.findIndex((x) => x.id === shown[i + d].id))
+  const canMove = (i, d) => !sortCol && visible[i + d] && (!groupBy || groupBy(visible[i + d]) === groupBy(visible[i]))
+  const moveBy = (i, d) => move(visible[i], items.findIndex((x) => x.id === visible[i + d].id))
   let draft = $state(null)
   let isNew = $state(false)
   let dialog = $state()
@@ -177,7 +180,7 @@
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100 max-sm:block dark:divide-slate-800">
-        {#each shown as item, i (item.id)}
+        {#each visible as item, i (item.id)}
           {@const bad = issuesFor(item.id)}
           {#if gap(i)}{@render spacer()}{/if}
           <tr class="hover:bg-slate-50 max-sm:block max-sm:px-4 max-sm:py-3 dark:hover:bg-slate-800/40 {item.disabled ? 'opacity-50' : ''}">
@@ -212,7 +215,7 @@
         {:else}
           <tr class="max-sm:block"><td class="td py-8 text-center text-slate-400 max-sm:block" colspan={columns.length + 1}>Nothing here yet.</td></tr>
         {/each}
-        {#if grouped && shown.length && generated.length}{@render spacer()}{/if}
+        {#if grouped && visible.length && generated.length}{@render spacer()}{/if}
         {#each generated as item (item.id)}
           <tr class="bg-slate-50/70 text-slate-500 max-sm:block max-sm:px-4 max-sm:py-3 dark:bg-slate-900/60 dark:text-slate-400">
             {#each columns as col, ci}
@@ -229,7 +232,7 @@
             <td class="td max-sm:hidden"></td>
           </tr>
         {/each}
-        {#if grouped && (shown.length || generated.length) && defaults.length}{@render spacer()}{/if}
+        {#if grouped && (visible.length || generated.length) && defaults.length}{@render spacer()}{/if}
         {#each defaults as item (item.id)}
           <tr class="bg-slate-950/50 max-sm:block max-sm:px-4 max-sm:py-3">
             {#each columns as col, ci}
@@ -254,6 +257,12 @@
       </tbody>
     </table>
   </div>
+  {#if pageSize && shown.length > pageSize}
+    <div class="flex items-center justify-between gap-2 border-t border-slate-200 px-4 py-2 text-xs text-slate-500 dark:border-slate-800">
+      <span>{showAll ? `All ${shown.length} shown` : `Showing ${pageSize} of ${shown.length}`}</span>
+      <button class="btn btn-ghost btn-sm" onclick={() => (showAll = !showAll)}>{showAll ? 'Show fewer' : 'Show all'}</button>
+    </div>
+  {/if}
 </section>
 
 <dialog bind:this={dialog} class="m-auto max-h-[calc(100dvh-2rem)] w-[min(34rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-0 text-slate-300 shadow-2xl shadow-black/60 backdrop:bg-black/70">
@@ -280,7 +289,7 @@
                   <input id="f-{f.key}" type="number" class="input" bind:value={draft[f.key]} placeholder={f.placeholder ?? ''} />
                 {:else}
                   <input id="f-{f.key}" type="text" class="input {f.mono ? 'mono' : ''}" bind:value={draft[f.key]} placeholder={f.placeholder ?? ''}
-                    list={f.type === 'iface' ? 'ifaces' : undefined} autocomplete="off" spellcheck="false" />
+                    list={f.type === 'iface' ? 'ifaces' : f.datalist} autocomplete="off" spellcheck="false" />
                 {/if}
               {/if}
               {#if hint}<p class="hint">{hint}</p>{/if}

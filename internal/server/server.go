@@ -98,6 +98,10 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("GET /api/firewall/ruleset", s.ruleset)
 	authed.HandleFunc("GET /api/generated", s.generated)
 
+	crud(s, authed, "/api/address-lists", func(c *model.Config) *[]model.AddressEntry { return &c.AddressLists }, func(a *model.AddressEntry) *string { return &a.ID })
+	authed.HandleFunc("POST /api/address-lists/bulk", s.listBulk)
+	authed.HandleFunc("GET /api/address-lists/dynamic", s.dynamicList)
+	authed.HandleFunc("DELETE /api/address-lists/dynamic", s.dynamicDelete)
 	crud(s, authed, "/api/bridges", func(c *model.Config) *[]model.Bridge { return &c.Bridges }, func(a *model.Bridge) *string { return &a.ID })
 	crud(s, authed, "/api/interfaces", func(c *model.Config) *[]model.LinkSetting { return &c.Interfaces }, func(a *model.LinkSetting) *string { return &a.ID })
 	crud(s, authed, "/api/addresses", func(c *model.Config) *[]model.Address { return &c.Addresses }, func(a *model.Address) *string { return &a.ID })
@@ -477,7 +481,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 			"ipv6": map[string]bool{"on": fwd6, "managed": cfg.Sysctl.IPv6Forward != nil},
 		},
 		"detect": detect.Run(), "issues": orEmpty(s.eng.Issues()), "safe": s.eng.SafeStatus(),
-		"counts": map[string]int{"addresses": len(cfg.Addresses), "routes": len(cfg.Routes), "rules": len(cfg.Rules), "firewall": len(cfg.Firewall.Rules), "clients": len(cfg.ClientRouting.Clients)},
+		"counts": map[string]int{"addresses": len(cfg.Addresses), "address_list_entries": len(cfg.AddressLists), "routes": len(cfg.Routes), "rules": len(cfg.Rules), "firewall": len(cfg.Firewall.Rules), "clients": len(cfg.ClientRouting.Clients)},
 	})
 }
 
@@ -545,6 +549,7 @@ func fwKey(r model.FWRule) string {
 }
 
 // orEmpty makes a nil slice encode as [] rather than null.
+
 func orEmpty[T any](in []T) []T {
 	if in == nil {
 		return []T{}
@@ -723,7 +728,7 @@ func (s *Server) mutate(w http.ResponseWriter, fn func(*model.Config) error) {
 
 // mutateWith is mutate with extra fields in the answer, such as the id of what
 // was just created.
-func (s *Server) mutateWith(w http.ResponseWriter, extra map[string]any, fn func(*model.Config) error) {
+func (s *Server) mutateWith(w http.ResponseWriter, extra map[string]any, fn func(*model.Config) error, after ...func(map[string]any)) {
 	issues, err := s.eng.Update(fn)
 	switch {
 	case errors.Is(err, errNotFound):
@@ -737,6 +742,9 @@ func (s *Server) mutateWith(w http.ResponseWriter, extra map[string]any, fn func
 		out := map[string]any{"issues": issues}
 		for k, v := range extra {
 			out[k] = v
+		}
+		for _, f := range after {
+			f(out)
 		}
 		writeJSON(w, out)
 	}

@@ -6,7 +6,7 @@ Everything the web panel does goes through this JSON API, so any program can do 
 - [Authentication](#authentication)
 - [Conventions](#conventions)
 - [Safe mode from a script](#safe-mode-from-a-script)
-- [Items you manage](#items-you-manage): addresses, routes, policy rules, firewall rules, bridges, interface settings, health checks, client routing
+- [Items you manage](#items-you-manage): addresses, address lists, routes, policy rules, firewall rules, bridges, interface settings, health checks, client routing
 - [Other settings](#other-settings): firewall policy, client routing switch, kernel settings, reapply
 - [Looking at the machine](#looking-at-the-machine)
 - [Panel, accounts and updates](#panel-accounts-and-updates)
@@ -66,7 +66,7 @@ The panel itself uses a cookie session from `POST /api/login` (`{"username": "..
 
 `kind` is one of `address`, `route`, `rule`, `firewall`, `sysctl`, `bridge`, `interface`. Items that couldn't be applied are retried automatically with a growing delay, and again whenever the kernel's interfaces, addresses or routes change. The current list is also in `GET /api/overview` under `issues`.
 
-**Lists.** Items you manage all share the same five calls (`<list>` is `routes`, `rules`, `addresses`, `bridges`, `interfaces`, `checks`, `firewall/rules` or `client-routing/clients`):
+**Lists.** Items you manage all share the same five calls (`<list>` is `routes`, `rules`, `addresses`, `address-lists`, `bridges`, `interfaces`, `checks`, `firewall/rules` or `client-routing/clients`):
 
 | Call | What it does |
 |---|---|
@@ -112,6 +112,26 @@ Extra addresses mini-net-man keeps on an interface.
 
 Addresses configured by something else (netplan, NetworkManager, `wg-quick`) are left alone. Removing an entry removes the address mini-net-man added.
 
+### Address list entries: `/api/address-lists`
+
+One row per entry, like MikroTik's address lists. Rows with the same `list` form one list. A firewall rule uses a list by name (see `src_list`, `dst_list` and the `add-*-to-list` actions below).
+
+| Field | Meaning |
+|---|---|
+| `list` | The list's name: starts with a letter, then letters, digits, `_`, `-` or `.`; at most 24 characters. A new name makes a new list. Required. |
+| `address` | An IP (`10.0.0.1`, `2001:db8::1`), a network (`10.0.0.0/8`) or an inclusive range (`10.0.0.5-10.0.0.20`). Required. A list can hold IPv4 and IPv6. |
+| `comment`, `disabled` | |
+
+Entries covering the same addresses in the same list are rejected as duplicates (`10.0.0.0/24` and `10.0.0.0-10.0.0.255` are the same entry). Overlapping entries are fine; they are merged when applied.
+
+Two more calls work on lists:
+
+| Call | Does |
+|---|---|
+| `POST /api/address-lists/bulk` | Adds many entries at once. Body `{"list": "blocklist", "addresses": "...", "comment": "", "replace": false}`. `addresses` is text (one entry per line or separated by spaces or commas, `#` or `;` starts a comment) or an array of strings. With `replace` the list's current entries are removed first. Returns `{"added": 4, "skipped": 2, "issues": []}` (`skipped` are ones already there). All or nothing: one invalid entry is a `400` naming it, and nothing changes. |
+| `GET /api/address-lists/dynamic` | The addresses that `add-src-to-list` and `add-dst-to-list` rules have put in lists: `[{"list": "ssh-blocked", "address": "198.51.100.23", "remaining": 86100}]`. `remaining` is the seconds left, or `0` for an entry that doesn't expire. These live in the kernel, not in `config.yaml`. |
+| `DELETE /api/address-lists/dynamic?list=NAME&address=IP` | Removes one such address. With only `list`, empties that list's added addresses; with neither, empties all of them. |
+
 ### Routes: `/api/routes`
 
 Like `ip route`.
@@ -151,7 +171,7 @@ One nftables table, `inet mini-net-man`, replaced atomically on every change. A 
 | Field | Meaning |
 |---|---|
 | `chain` | `input`, `forward`, `output`; `dstnat` (before routing) and `srcnat` (after routing); `mangle` (forwarded traffic, for MSS clamping); `mangle-in` (everything arriving, before routing) and `mangle-out` (locally created traffic), both for connection marking. Required. |
-| `action` | `accept`, `drop`, `reject`, `return`; `masquerade`, `snat`, `dnat`; `clamp-mss`; `mark-connection`, `restore-mark`. Required. |
+| `action` | `accept`, `drop`, `reject`, `return`; `masquerade`, `snat`, `dnat`; `clamp-mss`; `mark-connection`, `restore-mark`; `add-src-to-list`, `add-dst-to-list`. Required. |
 | `in_iface`, `out_iface` | Interface name; a trailing `*` is a wildcard (`wg*`). Only use `in_iface` where packets arrive (not in `output`, `srcnat` or `mangle-out`) and `out_iface` where they leave (not in `input`, `dstnat` or `mangle-in`); the panel hides them elsewhere, and the API does not check. |
 | `src`, `dst` | Address or network. |
 | `family` | `ipv4` or `ipv6`; empty is both. |
@@ -161,9 +181,12 @@ One nftables table, `inet mini-net-man`, replaced atomically on every change. A 
 | `to_addr`, `to_port` (number) | The target of `dnat` and `snat`. `to_port` 0 keeps the port. |
 | `mss` (number) | For `clamp-mss`: 536 to 9000, or `0` to fit the outgoing route's MTU. |
 | `mark` (number) | For `mark-connection`: above 0. |
+| `src_list`, `dst_list` | Match traffic whose source / destination is in this address list. A leading `!` means "not in the list": `!allowed`. A list nobody has filled matches nothing. |
+| `list` | For `add-src-to-list` and `add-dst-to-list`: the list to add to (created if needed). |
+| `timeout` (number) | For those actions: seconds the address stays, 0 to 31536000. `0` keeps it until removed; seeing it again restarts the time. |
 | `comment`, `disabled` | |
 
-Which actions go in which chain: `masquerade` and `snat` in `srcnat`; `dnat` in `dstnat`; `clamp-mss` only in `mangle`; marking only in `mangle-in` and `mangle-out`. The server explains a mismatch in the `400`. `GET /api/firewall/ruleset` shows the generated nft text.
+Which actions go in which chain: `masquerade` and `snat` in `srcnat`; `dnat` in `dstnat`; `clamp-mss` only in `mangle`; marking and the add-to-list actions in `mangle-in` and `mangle-out` (the add actions work in every chain except `mangle`). The add-to-list actions don't stop the packet: later rules still see it, as in MikroTik. The server explains a mismatch in the `400`. `GET /api/firewall/ruleset` shows the generated nft text.
 
 ### Bridges: `/api/bridges`
 

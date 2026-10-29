@@ -1391,3 +1391,162 @@ func TestBridge(t *testing.T) {
 		t.Errorf("wgBridge1 not released:\n%s", out)
 	}
 }
+
+// TestAddressLists sends real packets at rules that use address lists:
+// static entries (networks and ranges, both families, overlapping), negated
+// matches, and addresses that a rule adds to a list, with their timeouts, kept
+// across a rebuild of the firewall.
+func TestAddressLists(t *testing.T) {
+	v := newEnv(t)
+	peer(t)
+	listen(t, "9000")
+	listen(t, "9001")
+	const h4, h6 = "10.55.0.1", "fd55::1"
+	expect := func(what string, got, want bool) {
+		t.Helper()
+		if got != want {
+			t.Errorf("%s: reachable=%v, want %v", what, got, want)
+		}
+	}
+	set := func(lists []model.AddressEntry, rules ...model.FWRule) {
+		t.Helper()
+		for i := range rules {
+			rules[i].ID = fmt.Sprintf("r%d", i)
+		}
+		for i := range lists {
+			lists[i].ID = fmt.Sprintf("e%d", i)
+		}
+		v.update(t, func(c *model.Config) {
+			c.AddressLists = lists
+			c.Firewall.Rules = rules
+		})
+	}
+	dyn := func() map[string]int {
+		t.Helper()
+		out := map[string]int{}
+		ds, err := v.k.ListDynamic()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range ds {
+			out[d.List+" "+d.Address] = d.Remaining
+		}
+		return out
+	}
+	if !pingable(h4) || !pingable(h6) {
+		t.Fatal("baseline connectivity is broken")
+	}
+
+	t.Log("static entries: a range and a network, overlapping, both families")
+	bad := func(addrs ...string) (out []model.AddressEntry) {
+		for _, a := range addrs {
+			out = append(out, model.AddressEntry{List: "bad", Address: a})
+		}
+		return
+	}
+	drop := model.FWRule{Chain: "input", Action: "drop", Proto: "icmp", SrcList: "bad"}
+	drop6 := model.FWRule{Chain: "input", Action: "drop", Proto: "icmpv6", SrcList: "bad"}
+	set(bad("10.55.0.1-10.55.0.5", "10.55.0.0/28", "fd55::/64"), drop, drop6)
+	expect("ping v4 from a listed range", pingable(h4), false)
+	expect("ping v6 from a listed /64", pingable(h6), false)
+	set(bad("10.55.0.9", "10.56.0.0/16"), drop, drop6)
+	expect("ping v4 from an address not in the list", pingable(h4), true)
+	expect("ping v6 with only IPv4 entries listed", pingable(h6), true)
+	set(bad("10.55.0.0-10.55.0.1"), drop, drop6)
+	expect("ping v4 from just below a range's end", pingable(h4), true)
+	set(bad("10.55.0.0-10.55.0.1", "10.55.0.2-10.55.0.250"), drop, drop6)
+	expect("ping v4 from the first address of a range", pingable(h4), false)
+	sets := sh(t, "nft list set inet mini-net-man bad.s4")
+	contains(t, "adjacent ranges merged", sets, "10.55.0.0-10.55.0.250")
+	set(bad("10.55.0.1-10.55.0.2"), drop, drop6)
+	expect("ping v4 from the last address of a range", pingable(h4), false)
+
+	t.Log("not in the list")
+	notIn := model.FWRule{Chain: "input", Action: "drop", Proto: "icmp", SrcList: "!ok"}
+	set([]model.AddressEntry{{List: "ok", Address: "192.0.2.1"}}, notIn)
+	expect("ping from an address outside the allow list", pingable(h4), false)
+	set([]model.AddressEntry{{List: "ok", Address: "192.0.2.1"}, {List: "ok", Address: "10.55.0.0/24"}}, notIn)
+	expect("ping from an address inside the allow list", pingable(h4), true)
+	set(nil, notIn) // the list no longer exists: nothing is in it
+	expect("ping with the list gone", pingable(h4), false)
+
+	t.Log("destination lists")
+	set([]model.AddressEntry{{List: "mine", Address: h4}}, model.FWRule{Chain: "input", Action: "drop", Proto: "icmp", DstList: "mine"})
+	expect("ping an address in dst list", pingable(h4), false)
+	expect("ping v6 (list is IPv4 only)", pingable(h6), true)
+
+	t.Log("a rule adds the sender to a list")
+	add := func(timeout int) model.FWRule {
+		return model.FWRule{Chain: "input", Action: "add-src-to-list", List: "seen", Timeout: timeout, Proto: "tcp", DstPort: "9000", ConnState: "new"}
+	}
+	block := model.FWRule{Chain: "input", Action: "drop", Proto: "tcp", DstPort: "9001", SrcList: "seen"}
+	set(nil, add(120), block)
+	expect("9001 before anything was added", connect(h4, "9001"), true)
+	expect("9000 itself is not blocked", connect(h4, "9000"), true)
+	expect("9001 after 9000 was touched (v4)", connect(h4, "9001"), false)
+	expect("v6 is a different set", connect(h6, "9001"), true)
+	expect("9000 over v6", connect(h6, "9000"), true)
+	expect("9001 after 9000 was touched (v6)", connect(h6, "9001"), false)
+	got := dyn()
+	if r := got["seen 10.55.0.2"]; r <= 0 || r > 120 {
+		t.Errorf("seen 10.55.0.2 remaining = %d, want 1..120 (all: %v)", r, got)
+	}
+	if _, ok := got["seen fd55::2"]; !ok {
+		t.Errorf("v6 sender not listed: %v", got)
+	}
+
+	t.Log("changing the config rebuilds the table but keeps what rules added")
+	set([]model.AddressEntry{{List: "elsewhere", Address: "192.0.2.77"}}, add(120), block)
+	expect("9001 still blocked after the rebuild", connect(h4, "9001"), false)
+	if r := dyn()["seen 10.55.0.2"]; r <= 0 || r > 120 {
+		t.Errorf("entry lost or its time reset across the rebuild: %d", r)
+	}
+
+	t.Log("removing one address and flushing")
+	if err := v.k.DelDynamic("seen", "10.55.0.2"); err != nil {
+		t.Fatal(err)
+	}
+	expect("9001 after removing the v4 sender", connect(h4, "9001"), true)
+	expect("9001 v6 sender still listed", connect(h6, "9001"), false)
+	if err := v.k.FlushDynamic("seen"); err != nil {
+		t.Fatal(err)
+	}
+	expect("9001 v6 after flush", connect(h6, "9001"), true)
+	if n := len(dyn()); n != 0 {
+		t.Errorf("flush left %v", dyn())
+	}
+
+	t.Log("entries expire")
+	set(nil, add(2), block)
+	expect("touch", connect(h4, "9000"), true)
+	expect("blocked while listed", connect(h4, "9001"), false)
+	time.Sleep(3 * time.Second)
+	expect("reachable after the timeout", connect(h4, "9001"), true)
+	if n := len(dyn()); n != 0 {
+		t.Errorf("expired entry still listed: %v", dyn())
+	}
+
+	t.Log("the staged SSH-style example from the README: the fourth connection in a minute is dropped")
+	staged := []model.FWRule{
+		{Chain: "input", Action: "drop", SrcList: "blocked"},
+		{Chain: "input", Action: "add-src-to-list", List: "blocked", Timeout: 86400, Proto: "tcp", DstPort: "9000", ConnState: "new", SrcList: "stage2"},
+		{Chain: "input", Action: "add-src-to-list", List: "stage2", Timeout: 60, Proto: "tcp", DstPort: "9000", ConnState: "new", SrcList: "stage1"},
+		{Chain: "input", Action: "add-src-to-list", List: "stage1", Timeout: 60, Proto: "tcp", DstPort: "9000", ConnState: "new"},
+	}
+	set(nil, staged...)
+	for i := 1; i <= 3; i++ {
+		expect(fmt.Sprintf("connection %d", i), connect(h4, "9000"), true)
+	}
+	expect("connection 4", connect(h4, "9000"), false)
+	expect("connection 5", connect(h4, "9000"), false)
+	if _, ok := dyn()["blocked 10.55.0.2"]; !ok {
+		t.Errorf("sender not in the blocked list: %v", dyn())
+	}
+	expect("another family is counted on its own", connect(h6, "9000"), true)
+
+	t.Log("removing the rules removes the sets")
+	set(nil)
+	if out, err := try("nft list sets inet mini-net-man"); err == nil && strings.Contains(out, "seen") {
+		t.Errorf("sets left behind:\n%s", out)
+	}
+}

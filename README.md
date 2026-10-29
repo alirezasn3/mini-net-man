@@ -5,6 +5,7 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 - **Interfaces & addresses**: see interfaces, add extra IPs.
 - **Routes** and **policy rules**: `ip route … table N` and `ip rule … priority N`, created by hand.
 - **Interfaces and bridges**: bring interfaces up or down, set their MTU, build bridges and choose their ports, all kept in place by the reconcile loop. The page also says what else manages the network (NetworkManager, systemd-networkd, netplan, ifupdown, ...) and which interfaces each one claims.
+- **Address lists**: named lists of IPs, networks and ranges, like MikroTik's address lists. Firewall rules match a list (or "not in" it) and can add the source or destination of matching traffic to a list for a while: blocklists, whitelists, and "block anyone who keeps trying SSH".
 - **Sorting**: click a column heading on any list (routes, policy rules, firewall rules, …) to sort it ascending, again for descending, a third time to go back. It only changes the view, is remembered in your browser, and never changes the order rules are applied in; moving firewall rules is off while a sort is active.
 - **HTTP API**: everything the panel does is a JSON API that other programs can call with an API token (made in Settings, optionally read-only).
 - **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically. Interface fields take a trailing `*` as a wildcard (`wg*` matches `wg0` and `wgBridge1`). Each chain's default action (accept, drop or reject) is the last row of the rule list and editable there.
@@ -110,6 +111,34 @@ The **Interfaces** page lists every interface the kernel has (state, MTU, bridge
 At the top of the page, mini-net-man reports what else configures this machine: **NetworkManager**, **systemd-networkd**, **netplan** (and the daemon it renders for), **ifupdown**, **ConnMan**, **dhcpcd**, **netctl**, **wicd**, DHCP clients, and **cloud-init**, each marked running and/or configured. In the list, each interface shows who claims it: NetworkManager's device status (anything not *unmanaged*), systemd-networkd's link state, and *mini-net-man* if it is in your config.
 
 When an interface is claimed by NetworkManager or systemd-networkd **and** by mini-net-man, the list shows *both*: that daemon may undo what you set (and you will see the two fight, as the kernel changes again and again). Tell it to leave the interface alone (`nmcli device set <name> managed no`, or an `unmanaged-devices` entry; for networkd, remove or narrow its `.network` file) or don't manage that interface here. This is detection only: mini-net-man never edits those tools' configuration.
+
+## Address lists
+
+An address list is a named set of addresses, like MikroTik's `/ip firewall address-list`. On the **Address lists** page each row puts one IP, network (`10.0.0.0/8`) or range (`10.0.0.5-10.0.0.20`) in a list. A list can hold IPv4 and IPv6 together. **Add many at once** takes a pasted blocklist (one entry per line, `#` starts a comment) and is all or nothing, so one typo adds nothing.
+
+On the **Firewall** page a rule can use lists:
+
+- **Source in address list** and **Destination in address list** match traffic from or to anything in the list. Put `!` in front (`!allowed`) for "not in the list". A rule that doesn't name a family applies to both: it looks up the IPv4 half of the list for IPv4 packets and the IPv6 half for IPv6.
+- Actions **add-src-to-list** and **add-dst-to-list** put the packet's source or destination address into a list, for a number of seconds (0 keeps it until you remove it; seeing the address again starts the time over). The rule doesn't stop the packet: matching carries on with the next rule, as in MikroTik, so adding and dropping take two rules. The list is created if it doesn't exist.
+
+Rules that add to a list, in order, are how you build the usual MikroTik patterns. For example, blocking an address that keeps opening SSH connections (the strictest stage goes first, because every rule sees the packet):
+
+| # | Chain | Match | Action |
+|---|---|---|---|
+| 1 | input | source in list `ssh-blocked` | drop |
+| 2 | input | tcp dport 22, state new, source in list `ssh-stage2` | add-src-to-list `ssh-blocked`, 86400 s |
+| 3 | input | tcp dport 22, state new, source in list `ssh-stage1` | add-src-to-list `ssh-stage2`, 60 s |
+| 4 | input | tcp dport 22, state new | add-src-to-list `ssh-stage1`, 60 s |
+
+Within a minute the first new connection puts the sender in `ssh-stage1`, the second in `ssh-stage2`, the third in `ssh-blocked`, and from the fourth on it is dropped. A whitelist is the same idea in reverse: a *drop* rule with *Source in address list* `!trusted` on the ports you want closed to everyone else.
+
+What to know:
+
+- The entries you write are in your config. What rules add is **not**: it lives in the kernel (a set with timeouts), so it is gone after a reboot, and it is shown separately under **Added by rules**, where you can remove one address or empty a list. It stays while you change the firewall; the table is rebuilt with those addresses and their remaining time.
+- Overlapping entries are merged (the kernel refuses overlaps), so `10.0.0.0/24` and `10.0.0.128-10.0.0.200` together are one range. The same range written two ways counts as a duplicate.
+- A rule that names a list nobody has filled just matches nothing (`!list` matches everything).
+- Under the hood each list is four nftables sets (`<name>.s4`, `.s6` for your entries; `.d4`, `.d6` for what rules add). Because one comparison can't ask "in this set or that", a rule that matches a list is written once per set and family: a positive match on a list can be up to four rules in `nft list ruleset`, all with the same action. A dynamic set holds at most 131072 addresses; when it is full, new ones are not added.
+- List names start with a letter and have at most 24 characters (letters, digits, `_`, `-`, `.`).
 
 ## MSS clamping
 

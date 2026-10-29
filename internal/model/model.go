@@ -12,17 +12,18 @@ const (
 
 // Config is the on-disk source of truth (config.yaml).
 type Config struct {
-	Web           Web           `yaml:"web" json:"web"`
-	Sysctl        Sysctl        `yaml:"sysctl" json:"sysctl"`
-	Bridges       []Bridge      `yaml:"bridges,omitempty" json:"bridges"`
-	Interfaces    []LinkSetting `yaml:"interfaces,omitempty" json:"interfaces"`
-	Addresses     []Address     `yaml:"addresses" json:"addresses"`
-	Routes        []Route       `yaml:"routes" json:"routes"`
-	Rules         []Rule        `yaml:"rules" json:"rules"`
-	Checks        []Check       `yaml:"checks" json:"checks"`
-	Firewall      Firewall      `yaml:"firewall" json:"firewall"`
-	ClientRouting ClientRouting `yaml:"client_routing" json:"client_routing"`
-	Update        Update        `yaml:"update" json:"update"`
+	Web           Web            `yaml:"web" json:"web"`
+	Sysctl        Sysctl         `yaml:"sysctl" json:"sysctl"`
+	AddressLists  []AddressEntry `yaml:"address_lists,omitempty" json:"address_lists"`
+	Bridges       []Bridge       `yaml:"bridges,omitempty" json:"bridges"`
+	Interfaces    []LinkSetting  `yaml:"interfaces,omitempty" json:"interfaces"`
+	Addresses     []Address      `yaml:"addresses" json:"addresses"`
+	Routes        []Route        `yaml:"routes" json:"routes"`
+	Rules         []Rule         `yaml:"rules" json:"rules"`
+	Checks        []Check        `yaml:"checks" json:"checks"`
+	Firewall      Firewall       `yaml:"firewall" json:"firewall"`
+	ClientRouting ClientRouting  `yaml:"client_routing" json:"client_routing"`
+	Update        Update         `yaml:"update" json:"update"`
 }
 
 // Update configures self-update from GitHub Releases.
@@ -81,6 +82,21 @@ type Address struct {
 	Comment   string `yaml:"comment,omitempty" json:"comment"`
 	Disabled  bool   `yaml:"disabled,omitempty" json:"disabled"`
 	Source    string `yaml:"-" json:"source,omitempty"` // set on generated items only
+}
+
+// AddressEntry is one row of a named address list, like MikroTik's
+// /ip firewall address-list: List names the list, Address is what is in it.
+// Firewall rules match against a whole list (src_list, dst_list) and can add
+// to one (add-src-to-list), so a list can be kept apart from the rules.
+type AddressEntry struct {
+	ID   string `yaml:"id" json:"id"`
+	List string `yaml:"list" json:"list"`
+	// Address is an IP, a network (10.0.0.0/8) or a range (10.0.0.5-10.0.0.20),
+	// IPv4 or IPv6. A list can hold both families.
+	Address  string `yaml:"address" json:"address"`
+	Comment  string `yaml:"comment,omitempty" json:"comment"`
+	Disabled bool   `yaml:"disabled,omitempty" json:"disabled"`
+	Source   string `yaml:"-" json:"source,omitempty"`
 }
 
 // Bridge is a software switch (like `ip link add br0 type bridge`): the
@@ -148,6 +164,9 @@ type Rule struct {
 type Firewall struct {
 	Policy FirewallPolicy `yaml:"policy" json:"policy"`
 	Rules  []FWRule       `yaml:"rules" json:"rules"`
+	// Lists are the enabled address list entries. They live in Config.AddressLists
+	// and are copied here so the kernel layer gets everything in one value.
+	Lists []AddressEntry `yaml:"-" json:"-"`
 }
 
 // FirewallPolicy is what happens to a packet that no rule in a filter chain
@@ -171,6 +190,15 @@ const ActionClampMSS = "clamp-mss"
 const (
 	ActionMarkConnection = "mark-connection"
 	ActionRestoreMark    = "restore-mark"
+)
+
+// Address lists. add-src-to-list and add-dst-to-list put the packet's source or
+// destination address into the list named by FWRule.List, for FWRule.Timeout
+// seconds (0 means until removed). Matching goes on afterwards, as in MikroTik's
+// add-src-to-address-list, so the rule can't both add and drop: use two rules.
+const (
+	ActionAddSrcToList = "add-src-to-list"
+	ActionAddDstToList = "add-dst-to-list"
 )
 
 // FW chains.
@@ -203,6 +231,10 @@ type FWRule struct {
 	ToPort    int    `yaml:"to_port,omitempty" json:"to_port"`       // dnat/snat target port
 	MSS       int    `yaml:"mss,omitempty" json:"mss"`               // clamp-mss: size to clamp to; 0 = fit the route\'s MTU
 	Mark      uint32 `yaml:"mark,omitempty" json:"mark"`             // mark-connection: the mark to set
+	SrcList   string `yaml:"src_list,omitempty" json:"src_list"`     // match: source is in this address list ("!name": is not)
+	DstList   string `yaml:"dst_list,omitempty" json:"dst_list"`     // match: destination is in this address list ("!name": is not)
+	List      string `yaml:"list,omitempty" json:"list"`             // add-src-to-list, add-dst-to-list: the list to add to
+	Timeout   int    `yaml:"timeout,omitempty" json:"timeout"`       // add-*-to-list: seconds the entry stays; 0 = until removed
 	Comment   string `yaml:"comment,omitempty" json:"comment"`
 	Disabled  bool   `yaml:"disabled,omitempty" json:"disabled"`
 	Source    string `yaml:"-" json:"source,omitempty"`

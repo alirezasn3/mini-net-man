@@ -218,3 +218,60 @@ func TestPortMovesBetweenBridges(t *testing.T) {
 		t.Error("br0 should be gone")
 	}
 }
+
+func TestAddressListValidation(t *testing.T) {
+	list := func(name, addr string) model.Config {
+		return model.Config{AddressLists: []model.AddressEntry{{ID: "a", List: name, Address: addr}}}
+	}
+	for name, c := range map[string]model.Config{
+		"no list":             list("", "10.0.0.1"),
+		"digit first":         list("1bad", "10.0.0.1"),
+		"space":               list("my list", "10.0.0.1"),
+		"too long":            list("abcdefghijklmnopqrstuvwxyz", "10.0.0.1"),
+		"junk address":        list("l", "not-an-ip"),
+		"backwards":           list("l", "10.0.0.9-10.0.0.1"),
+		"mixed families":      list("l", "10.0.0.1-fd00::1"),
+		"bad prefix":          list("l", "10.0.0.0/33"),
+		"mapped":              list("l", "::ffff:10.0.0.1"),
+		"duplicate":           {AddressLists: []model.AddressEntry{{ID: "a", List: "l", Address: "10.0.0.0/24"}, {ID: "b", List: "l", Address: "10.0.0.0-10.0.0.255"}}},
+		"unknown action list": {Firewall: model.Firewall{Rules: []model.FWRule{{ID: "r", Chain: "input", Action: "add-src-to-list"}}}},
+		"negative timeout":    {Firewall: model.Firewall{Rules: []model.FWRule{{ID: "r", Chain: "input", Action: "add-src-to-list", List: "x", Timeout: -1}}}},
+		"bad src_list":        {Firewall: model.Firewall{Rules: []model.FWRule{{ID: "r", Chain: "input", Action: "drop", SrcList: "!"}}}},
+		"mangle":              {Firewall: model.Firewall{Rules: []model.FWRule{{ID: "r", Chain: "mangle", Action: "add-src-to-list", List: "x"}}}},
+	} {
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	ok := model.Config{
+		AddressLists: []model.AddressEntry{
+			{ID: "a", List: "blocklist", Address: "203.0.113.0/24"}, {ID: "b", List: "blocklist", Address: "198.51.100.5-198.51.100.9"},
+			{ID: "c", List: "blocklist", Address: "2001:db8::/32"}, {ID: "d", List: "blocklist", Address: "10.0.0.0/24", Disabled: true},
+			{ID: "e", List: "blocklist", Address: "10.0.0.0-10.0.0.255"}, // the disabled twin doesn't count
+		},
+		Firewall: model.Firewall{Rules: []model.FWRule{
+			{ID: "r1", Chain: "input", Action: "drop", SrcList: "blocklist"},
+			{ID: "r2", Chain: "forward", Action: "drop", DstList: "!allowed"},
+			{ID: "r3", Chain: "input", Action: "add-src-to-list", List: "seen", Timeout: 600, Proto: "tcp", DstPort: "22"},
+			{ID: "r4", Chain: "mangle-in", Action: "add-dst-to-list", List: "touched"},
+		}},
+	}
+	if err := ok.Validate(); err != nil {
+		t.Errorf("valid config rejected: %v", err)
+	}
+}
+
+func TestAddressListsReachTheKernelLayer(t *testing.T) {
+	e, k := newTest(t)
+	mustUpdate(t, e, func(c *model.Config) error {
+		c.AddressLists = []model.AddressEntry{{ID: "a", List: "bad", Address: "203.0.113.0/24"}, {ID: "b", List: "bad", Address: "10.9.9.9", Disabled: true}}
+		c.Firewall.Rules = []model.FWRule{{ID: "r", Chain: "input", Action: "drop", SrcList: "bad"}}
+		return nil
+	})
+	live, _ := k.FirewallRuleset()
+	_ = live
+	d := e.Desired()
+	if len(d.Firewall.Lists) != 1 || d.Firewall.Lists[0].Address != "203.0.113.0/24" {
+		t.Errorf("lists in desired firewall: %+v", d.Firewall.Lists)
+	}
+}

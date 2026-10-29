@@ -68,6 +68,12 @@ type Kernel interface {
 	ApplyFirewall(fw model.Firewall) error
 	// FirewallRuleset dumps the live table as text ("" when absent).
 	FirewallRuleset() (string, error)
+	// ListDynamic returns the addresses firewall rules have added to address
+	// lists (add-src-to-list); DelDynamic removes one and FlushDynamic empties
+	// a list's, or every list's when list is "". Applying the firewall keeps them.
+	ListDynamic() ([]DynAddr, error)
+	DelDynamic(list, address string) error
+	FlushDynamic(list string) error
 
 	// IPForward and SetIPForward read and write net.ipv4.ip_forward, or
 	// net.ipv6.conf.all.forwarding when v6 is true.

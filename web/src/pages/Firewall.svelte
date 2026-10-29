@@ -8,12 +8,14 @@
   let generated = $state([])
   let ruleset = $state({ desired: '', live: '' })
   let showRuleset = $state(false)
+  let listNames = $state([])
 
   async function reload() {
     const [fw, g, rs] = await Promise.all([api('GET', '/api/firewall'), api('GET', '/api/generated'), api('GET', '/api/firewall/ruleset')])
     policy = { input: 'accept', forward: 'accept', output: 'accept', ...fw.policy }
     generated = g.firewall
     ruleset = rs
+    listNames = [...new Set((await api('GET', '/api/address-lists').catch(() => [])).map((e) => e.list))].sort()
     refreshOverview()
   }
   $effect(() => {
@@ -37,7 +39,7 @@
   }
 
   const chains = ['input', 'forward', 'output', 'mangle', 'mangle-in', 'mangle-out', 'dstnat', 'srcnat']
-  const actions = ['accept', 'drop', 'reject', 'return', 'masquerade', 'dnat', 'snat', 'clamp-mss', 'mark-connection', 'restore-mark']
+  const actions = ['accept', 'drop', 'reject', 'return', 'masquerade', 'dnat', 'snat', 'clamp-mss', 'mark-connection', 'restore-mark', 'add-src-to-list', 'add-dst-to-list']
   const match = (r) =>
     r.default ? 'everything not matched above' : [
       r.family && r.family.replace('ipv', 'IPv'),
@@ -45,19 +47,26 @@
       r.out_iface && `out ${r.out_iface}`,
       r.proto,
       r.src && `from ${r.src}`,
+      r.src_list && `from list ${r.src_list}`,
       r.src_port && `sport ${r.src_port}`,
       r.dst && `to ${r.dst}`,
+      r.dst_list && `to list ${r.dst_list}`,
       r.dst_port && `dport ${r.dst_port}`,
       r.conn_state && `state ${r.conn_state}`,
     ]
       .filter(Boolean)
       .join(' ') || 'any'
-  const target = (r) => (r.action === 'clamp-mss' ? (r.mss ? `clamp-mss ${r.mss}` : 'clamp-mss to route MTU') : r.action === 'mark-connection' ? `mark-connection ${r.mark}` : r.to_addr ? `${r.action} → ${r.to_addr}${r.to_port ? ':' + r.to_port : ''}` : r.action)
+  const dur = (n) => (n % 86400 === 0 ? `${n / 86400}d` : n % 3600 === 0 ? `${n / 3600}h` : n % 60 === 0 ? `${n / 60}m` : `${n}s`)
+  const target = (r) => (r.action === 'add-src-to-list' || r.action === 'add-dst-to-list' ? `${r.action} ${r.list}${r.timeout ? ` for ${dur(r.timeout)}` : ''}` : r.action === 'clamp-mss' ? (r.mss ? `clamp-mss ${r.mss}` : 'clamp-mss to route MTU') : r.action === 'mark-connection' ? `mark-connection ${r.mark}` : r.to_addr ? `${r.action} → ${r.to_addr}${r.to_port ? ':' + r.to_port : ''}` : r.action)
 </script>
+
+<datalist id="lists">
+  {#each listNames as n}<option value={n}></option>{/each}
+</datalist>
 
 <div class="space-y-5">
   <p class="text-sm text-slate-500">
-    Rules live in their own nftables table, <span class="mono">inet mini-net-man</span> (IPv4 and IPv6), replaced atomically on every change. A rule with no address and no Family applies to both families. Rules in a chain run top to bottom; <b>dstnat</b> and <b>srcnat</b> are the NAT chains (like MikroTik's dst-nat / src-nat); <b>mangle</b> holds MSS clamping, and <b>mangle-in</b> / <b>mangle-out</b> hold connection marking. The three <b>default</b> rows at the end say what happens to anything no rule decided: <b>accept</b> lets it through, <b>drop</b> discards it silently, <b>reject</b> discards it and tells the sender, so it fails at once instead of timing out.
+    Rules live in their own nftables table, <span class="mono">inet mini-net-man</span> (IPv4 and IPv6), replaced atomically on every change. A rule with no address and no Family applies to both families. Rules in a chain run top to bottom; <b>dstnat</b> and <b>srcnat</b> are the NAT chains (like MikroTik's dst-nat / src-nat); <b>mangle</b> holds MSS clamping, and <b>mangle-in</b> / <b>mangle-out</b> hold connection marking. Rules can match an <a class="underline" href="#/address-lists">address list</a> and add addresses to one. The three <b>default</b> rows at the end say what happens to anything no rule decided: <b>accept</b> lets it through, <b>drop</b> discards it silently, <b>reject</b> discards it and tells the sender, so it fails at once instead of timing out.
   </p>
 
   <Resource
@@ -80,11 +89,13 @@
     ]}
     fields={[
       { key: 'chain', label: 'Chain', type: 'select', options: chains, help: (d) => ({ input: 'Traffic addressed to this machine.', forward: 'Traffic passing through this machine to somewhere else.', output: 'Traffic this machine creates itself.', mangle: 'Traffic passing through, after routing. Used for MSS clamping.', 'mangle-in': 'Everything arriving, before the routing decision. Used to mark connections.', 'mangle-out': 'Traffic this machine sends, re-routed if its mark changes. Used to send replies back the way the request came.', dstnat: 'Rewrites the destination before routing: port forwarding.', srcnat: 'Rewrites the source on the way out: masquerade.' })[d.chain] },
-      { key: 'action', label: 'Action', type: 'select', options: actions, help: (d) => ({ accept: 'Let the packet through.', drop: 'Discard it silently.', reject: 'Discard it and tell the sender, so it fails fast.', return: 'Stop checking this chain.', masquerade: 'Use the outgoing interface\u2019s address as the source. srcnat chain only.', dnat: 'Send it to another address or port. dstnat chain only.', snat: 'Use a fixed address as the source. srcnat chain only.', 'clamp-mss': 'Lower the TCP segment size announced when a connection starts, so packets fit a smaller link and are not silently dropped. mangle chain only.', 'mark-connection': 'Stamp a number on the packet and its whole connection. A policy rule with the same fwmark can then route it. mangle-in or mangle-out chain.', 'restore-mark': 'Give the packet the mark its connection already has. Use it in mangle-out so replies are routed by the mark of the request.' })[d.action] },
+      { key: 'action', label: 'Action', type: 'select', options: actions, help: (d) => ({ accept: 'Let the packet through.', drop: 'Discard it silently.', reject: 'Discard it and tell the sender, so it fails fast.', return: 'Stop checking this chain.', masquerade: 'Use the outgoing interface\u2019s address as the source. srcnat chain only.', dnat: 'Send it to another address or port. dstnat chain only.', snat: 'Use a fixed address as the source. srcnat chain only.', 'clamp-mss': 'Lower the TCP segment size announced when a connection starts, so packets fit a smaller link and are not silently dropped. mangle chain only.', 'mark-connection': 'Stamp a number on the packet and its whole connection. A policy rule with the same fwmark can then route it. mangle-in or mangle-out chain.', 'restore-mark': 'Give the packet the mark its connection already has. Use it in mangle-out so replies are routed by the mark of the request.', 'add-src-to-list': 'Put the packet\u2019s source address in an address list, then carry on to the next rule. Match the list in another rule. Like MikroTik\u2019s add-src-to-address-list.', 'add-dst-to-list': 'Put the packet\u2019s destination address in an address list, then carry on to the next rule.' })[d.action] },
       { key: 'in_iface', label: 'In interface', type: 'iface', mono: true, help: 'Only traffic that arrived on this interface. Empty matches any. A trailing * is a wildcard: wg* matches wg0, wgBridge1.', show: (d) => d.chain !== 'output' && d.chain !== 'srcnat' && d.chain !== 'mangle-out' },
       { key: 'out_iface', label: 'Out interface', type: 'iface', mono: true, help: 'Only traffic leaving through this interface. Empty matches any. A trailing * is a wildcard: wg* matches wg0, wgBridge1.', show: (d) => d.chain !== 'input' && d.chain !== 'dstnat' && d.chain !== 'mangle-in' },
       { key: 'src', label: 'Source', type: 'text', mono: true, placeholder: '10.0.0.0/16 or fd00::/64', help: 'Only traffic from this address or network.' },
       { key: 'dst', label: 'Destination', type: 'text', mono: true, help: 'Only traffic to this address or network.' },
+      { key: 'src_list', label: 'Source in address list', type: 'text', mono: true, datalist: 'lists', placeholder: 'blocklist, or !allowed', help: 'Only traffic whose source is in this list (see Address lists). Put ! in front for \u201cnot in the list\u201d: !allowed. Lists can hold IPv4 and IPv6; the rule uses the right half for each packet.' },
+      { key: 'dst_list', label: 'Destination in address list', type: 'text', mono: true, datalist: 'lists', placeholder: 'servers, or !internal', help: 'Only traffic whose destination is in this list. ! in front means \u201cnot in the list\u201d.' },
       { key: 'family', label: 'Family', type: 'select', options: [{ value: '', label: 'both (or from addresses)' }, { value: 'ipv4', label: 'IPv4 only' }, { value: 'ipv6', label: 'IPv6 only' }], help: 'Leave on both unless the rule should only apply to one. Addresses above decide it automatically.' },
       { key: 'proto', label: 'Protocol', type: 'select', options: [{ value: '', label: 'any' }, 'tcp', 'udp', 'icmp', 'icmpv6'], help: 'Choose tcp or udp to match ports.' },
       { key: 'conn_state', label: 'Connection state', type: 'text', placeholder: 'established,related', help: 'Comma list of new, established, related, invalid. established,related lets replies to your own traffic through.' },
@@ -94,9 +105,11 @@
       { key: 'to_port', label: 'To port', type: 'number', help: 'Optional. 0 keeps the original port.', show: (d) => d.action === 'dnat' || d.action === 'snat' },
       { key: 'mss', label: 'MSS', type: 'number', help: '0 fits the outgoing route\u2019s MTU (recommended, and what pppoe/tunnel clamping usually wants). Or give a fixed size such as 1300. An MSS already lower is never raised.', show: (d) => d.action === 'clamp-mss' },
       { key: 'mark', label: 'Mark', type: 'number', help: 'A number above 0, for example 1 for traffic from one link and 2 for the other. Create a policy rule with the same fwmark to route on it.', show: (d) => d.action === 'mark-connection' },
+      { key: 'list', label: 'Add to list', type: 'text', mono: true, datalist: 'lists', placeholder: 'ssh-stage1', help: 'The address list to add to. It is created if it does not exist. A rule can match a list in the same rule (for example a rule that adds to stage2 only for addresses already in stage1).', show: (d) => d.action === 'add-src-to-list' || d.action === 'add-dst-to-list' },
+      { key: 'timeout', label: 'Keep for (seconds)', type: 'number', help: '0 keeps the address until you remove it. Seeing the same address again starts the time over. 600 is ten minutes, 86400 a day.', show: (d) => d.action === 'add-src-to-list' || d.action === 'add-dst-to-list' },
       { key: 'comment', label: 'Comment', type: 'text', wide: true, help: 'Optional note for yourself. It also shows in nft list.' },
     ]}
-    blank={() => ({ chain: 'forward', action: 'accept', family: '', in_iface: '', out_iface: '', src: '', dst: '', proto: '', src_port: '', dst_port: '', conn_state: '', to_addr: '', to_port: 0, mss: 0, mark: 0, comment: '', disabled: false })}
+    blank={() => ({ chain: 'forward', action: 'accept', family: '', in_iface: '', out_iface: '', src: '', dst: '', proto: '', src_port: '', dst_port: '', conn_state: '', to_addr: '', to_port: 0, mss: 0, mark: 0, src_list: '', dst_list: '', list: '', timeout: 0, comment: '', disabled: false })}
   />
 
   <section class="card">

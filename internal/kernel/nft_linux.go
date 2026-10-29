@@ -5,6 +5,7 @@ package kernel
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/google/nftables/expr"
 	"github.com/google/nftables/userdata"
 	"golang.org/x/sys/unix"
+	"time"
 )
 
 // ApplyFirewall replaces the whole mini-net-man table in one nftables
@@ -24,6 +26,10 @@ func (Linux) ApplyFirewall(fw model.Firewall) error {
 		return err
 	}
 	defer c.CloseLasting()
+
+	// Addresses that rules added to lists since the last apply live only in the
+	// kernel. Read them now so the rebuilt table starts with them.
+	keep := dynamicElements(c)
 
 	// add + delete is the idiom for "remove this table if it exists" inside
 	// a transaction. The first one clears the IPv4-only table early versions
@@ -36,6 +42,11 @@ func (Linux) ApplyFirewall(fw model.Firewall) error {
 	c.AddTable(tbl)
 	c.DelTable(tbl)
 	tbl = c.AddTable(tbl)
+
+	sets, err := addListSets(c, tbl, fw, keep)
+	if err != nil {
+		return err
+	}
 
 	chains := map[string]*nftables.Chain{}
 	for _, d := range chainDefs {
@@ -57,7 +68,7 @@ func (Linux) ApplyFirewall(fw model.Firewall) error {
 		if r.Disabled {
 			continue
 		}
-		variants, err := buildRule(r)
+		variants, err := buildRule(r, sets)
 		if err != nil {
 			return fmt.Errorf("rule %s: %w", r.ID, err)
 		}
@@ -78,6 +89,145 @@ func (Linux) ApplyFirewall(fw model.Firewall) error {
 			}
 			c.AddRule(&nftables.Rule{Table: tbl, Chain: chains[d.name], Exprs: exprs,
 				UserData: userdata.AppendString(nil, userdata.TypeComment, "default policy")})
+		}
+	}
+	return c.Flush()
+}
+
+// addListSets creates the sets behind the address lists, with the static
+// entries merged into intervals and the dynamic ones carried over.
+func addListSets(c *nftables.Conn, tbl *nftables.Table, fw model.Firewall, keep map[string][]nftables.SetElement) (map[string]*nftables.Set, error) {
+	sets := map[string]*nftables.Set{}
+	ranges := listRanges(fw.Lists)
+	for _, name := range listNames(fw) {
+		for _, v6 := range []bool{false, true} {
+			kt := nftables.TypeIPAddr
+			if v6 {
+				kt = nftables.TypeIP6Addr
+			}
+			st := &nftables.Set{Table: tbl, Name: SetName(name, v6, false), KeyType: kt, Interval: true}
+			var elems []nftables.SetElement
+			for _, r := range ranges[st.Name] {
+				elems = append(elems, nftables.SetElement{Key: r.first.AsSlice()})
+				if end := r.last.Next(); end.IsValid() {
+					elems = append(elems, nftables.SetElement{Key: end.AsSlice(), IntervalEnd: true})
+				}
+			}
+			if err := c.AddSet(st, elems); err != nil {
+				return nil, fmt.Errorf("address list %s: %w", name, err)
+			}
+			sets[st.Name] = st
+			dy := &nftables.Set{Table: tbl, Name: SetName(name, v6, true), KeyType: kt, HasTimeout: true, Dynamic: true, Size: DynSetSize}
+			if err := c.AddSet(dy, keep[dy.Name]); err != nil {
+				return nil, fmt.Errorf("address list %s: %w", name, err)
+			}
+			sets[dy.Name] = dy
+		}
+	}
+	return sets, nil
+}
+
+// dynamicSets returns the live sets that rules add addresses to.
+func dynamicSets(c *nftables.Conn) []*nftables.Set {
+	all, err := c.GetSets(&nftables.Table{Family: nftables.TableFamilyINet, Name: TableName})
+	if err != nil {
+		return nil // no table yet
+	}
+	var out []*nftables.Set
+	for _, s := range all {
+		if s.Dynamic && (strings.HasSuffix(s.Name, ".d4") || strings.HasSuffix(s.Name, ".d6")) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// dynamicElements reads the live dynamic sets, keeping each entry's remaining
+// time as its new timeout.
+func dynamicElements(c *nftables.Conn) map[string][]nftables.SetElement {
+	out := map[string][]nftables.SetElement{}
+	for _, s := range dynamicSets(c) {
+		els, err := c.GetSetElements(s)
+		if err != nil {
+			continue
+		}
+		for _, e := range els {
+			ne := nftables.SetElement{Key: e.Key}
+			if e.Timeout > 0 {
+				if e.Expires <= 0 {
+					continue
+				}
+				ne.Timeout = e.Expires
+			}
+			out[s.Name] = append(out[s.Name], ne)
+		}
+	}
+	return out
+}
+
+func listOfSet(name string) string { return name[:len(name)-3] }
+
+// ListDynamic returns the addresses rules have added to lists, with the time
+// each has left.
+func (Linux) ListDynamic() ([]DynAddr, error) {
+	c, err := nftables.New()
+	if err != nil {
+		return nil, err
+	}
+	defer c.CloseLasting()
+	out := []DynAddr{}
+	for _, s := range dynamicSets(c) {
+		els, err := c.GetSetElements(s)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range els {
+			a, ok := netip.AddrFromSlice(e.Key)
+			if !ok {
+				continue
+			}
+			d := DynAddr{List: listOfSet(s.Name), Address: a.String()}
+			if e.Timeout > 0 {
+				d.Remaining = int((e.Expires + time.Second - 1) / time.Second)
+			}
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
+// DelDynamic removes one address a rule added to a list.
+func (Linux) DelDynamic(list, address string) error {
+	a, err := netip.ParseAddr(address)
+	if err != nil {
+		return fmt.Errorf("%q is not an IP address", address)
+	}
+	c, err := nftables.New()
+	if err != nil {
+		return err
+	}
+	defer c.CloseLasting()
+	for _, s := range dynamicSets(c) {
+		if s.Name == SetName(list, a.Is6(), true) {
+			if err := c.SetDeleteElements(s, []nftables.SetElement{{Key: a.AsSlice()}}); err != nil {
+				return err
+			}
+			return c.Flush()
+		}
+	}
+	return fmt.Errorf("%s is not in list %s", address, list)
+}
+
+// FlushDynamic empties the dynamic part of one list, or of every list when list is "".
+func (Linux) FlushDynamic(list string) error {
+	c, err := nftables.New()
+	if err != nil {
+		return err
+	}
+	defer c.CloseLasting()
+	for _, s := range dynamicSets(c) {
+		if list == "" || listOfSet(s.Name) == list {
+			c.FlushSet(s)
 		}
 	}
 	return c.Flush()
@@ -142,6 +292,29 @@ func matchAddr(src bool, cidr string) ([]expr.Any, error) {
 	return append(out, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ip}), nil
 }
 
+// loadAddr puts the source or destination address of the family into register 1.
+func loadAddr(src, v6 bool) *expr.Payload {
+	offset, size := uint32(16), uint32(4)
+	switch {
+	case v6 && src:
+		offset, size = 8, 16
+	case v6:
+		offset, size = 24, 16
+	case src:
+		offset = 12
+	}
+	return &expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: offset, Len: size}
+}
+
+// lookupAddr matches the address against a set, or against not being in it.
+func lookupAddr(src, v6 bool, ref setRef, sets map[string]*nftables.Set) ([]expr.Any, error) {
+	set := sets[ref.name]
+	if set == nil {
+		return nil, fmt.Errorf("no set %s", ref.name)
+	}
+	return []expr.Any{loadAddr(src, v6), &expr.Lookup{SourceRegister: 1, SetName: set.Name, SetID: set.ID, Invert: ref.not}}, nil
+}
+
 // portExprs matches a transport-header port (offset 0 = source, 2 = dest)
 // against one port or a lo-hi range.
 func portExprs(offset uint32, spec string) ([]expr.Any, error) {
@@ -177,15 +350,28 @@ func splitList(s string) []string {
 	return out
 }
 
-// buildRule returns one expression list per source/destination port
-// alternative ("80,443" becomes two rules).
-func buildRule(r model.FWRule) ([][]expr.Any, error) {
+// buildRule returns one expression list per form of the rule: per source and
+// destination port alternative ("80,443" is two rules) and, for rules that use
+// address lists, per family and per set.
+func buildRule(r model.FWRule, sets map[string]*nftables.Set) ([][]expr.Any, error) {
 	if r.Action == model.ActionClampMSS {
 		r.Proto = "tcp"
 	}
+	var out [][]expr.Any
+	for _, v := range ruleVariants(r) {
+		part, err := buildVariant(r, v, sets)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, part...)
+	}
+	return out, nil
+}
+
+func buildVariant(r model.FWRule, v ruleVariant, sets map[string]*nftables.Set) ([][]expr.Any, error) {
 	var head []expr.Any
 	// In an inet table nothing narrows a rule to one family unless we say so.
-	switch r.EffFamily() {
+	switch v.fam {
 	case "ipv4":
 		head = append(head, &expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}})
 	case "ipv6":
@@ -206,6 +392,18 @@ func buildRule(r model.FWRule) ([][]expr.Any, error) {
 			return nil, err
 		}
 		head = append(head, e...)
+	}
+	for _, side := range []struct {
+		src  bool
+		refs []setRef
+	}{{true, v.src}, {false, v.dst}} {
+		for _, ref := range side.refs {
+			e, err := lookupAddr(side.src, v.fam == "ipv6", ref, sets)
+			if err != nil {
+				return nil, err
+			}
+			head = append(head, e...)
+		}
 	}
 	protos := map[string]byte{"tcp": unix.IPPROTO_TCP, "udp": unix.IPPROTO_UDP, "icmp": unix.IPPROTO_ICMP, "icmpv6": unix.IPPROTO_ICMPV6}
 	if p, ok := protos[r.Proto]; ok {
@@ -233,9 +431,19 @@ func buildRule(r model.FWRule) ([][]expr.Any, error) {
 			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}})
 	}
 
-	tail, err := action(r)
-	if err != nil {
-		return nil, err
+	var tail []expr.Any
+	if v.add == "" {
+		var err error
+		if tail, err = action(r); err != nil {
+			return nil, err
+		}
+	} else {
+		set := sets[v.add]
+		if set == nil {
+			return nil, fmt.Errorf("no set %s", v.add)
+		}
+		tail = []expr.Any{loadAddr(r.Action == model.ActionAddSrcToList, v.fam == "ipv6"),
+			&expr.Dynset{SrcRegKey: 1, SetName: set.Name, SetID: set.ID, Operation: unix.NFT_DYNSET_OP_UPDATE, Timeout: timeoutOf(r)}}
 	}
 
 	var out [][]expr.Any

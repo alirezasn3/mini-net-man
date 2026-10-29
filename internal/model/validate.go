@@ -202,6 +202,91 @@ func ValidUsername(s string) error {
 	return nil
 }
 
+// MaxListTimeout is the longest an add-to-list entry may live: a year.
+const MaxListTimeout = 365 * 24 * 3600
+
+// ValidListName limits address list names to what nftables accepts in a set
+// name (starting with a letter) and short enough for the longest suffix.
+func ValidListName(s string) error {
+	if s == "" {
+		return fmt.Errorf("an address list name is required")
+	}
+	if len(s) > 24 {
+		return fmt.Errorf("an address list name can be at most 24 characters")
+	}
+	for i, r := range s {
+		letter := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+		digit := r >= '0' && r <= '9'
+		if !(letter || i > 0 && (digit || r == '_' || r == '-' || r == '.')) {
+			return fmt.Errorf("list name %q: start with a letter, then letters, digits, _ - or . only", s)
+		}
+	}
+	return nil
+}
+
+// SplitListRef reads a list reference in a firewall rule: "name", or "!name"
+// for "not in the list".
+func SplitListRef(s string) (name string, not bool) {
+	s = strings.TrimSpace(s)
+	if rest, ok := strings.CutPrefix(s, "!"); ok {
+		return strings.TrimSpace(rest), true
+	}
+	return s, false
+}
+
+// ParseListAddress reads one address list entry: an IP, a network
+// (10.0.0.0/8) or an inclusive range (10.0.0.5-10.0.0.20), IPv4 or IPv6. It
+// returns the first and last address covered.
+func ParseListAddress(s string) (first, last netip.Addr, err error) {
+	s = strings.TrimSpace(s)
+	bad := func() (netip.Addr, netip.Addr, error) {
+		return netip.Addr{}, netip.Addr{}, fmt.Errorf("%q is not an IP address, network (10.0.0.0/8) or range (10.0.0.5-10.0.0.20)", s)
+	}
+	if a, b, ok := strings.Cut(s, "-"); ok {
+		fa, e1 := netip.ParseAddr(strings.TrimSpace(a))
+		la, e2 := netip.ParseAddr(strings.TrimSpace(b))
+		if e1 != nil || e2 != nil || fa.Is4() != la.Is4() || fa.Is4In6() || la.Is4In6() || fa.Zone() != "" || la.Zone() != "" {
+			return bad()
+		}
+		if fa.Compare(la) > 0 {
+			return netip.Addr{}, netip.Addr{}, fmt.Errorf("range %q ends before it starts", s)
+		}
+		return fa, la, nil
+	}
+	if strings.Contains(s, "/") {
+		p, e := netip.ParsePrefix(s)
+		if e != nil || p.Addr().Is4In6() || p.Addr().Zone() != "" {
+			return bad()
+		}
+		p = p.Masked()
+		return p.Addr(), lastAddr(p), nil
+	}
+	a, e := netip.ParseAddr(s)
+	if e != nil || a.Is4In6() || a.Zone() != "" {
+		return bad()
+	}
+	return a, a, nil
+}
+
+// lastAddr is the highest address in p.
+func lastAddr(p netip.Prefix) netip.Addr {
+	b := p.Addr().AsSlice()
+	for i := p.Bits(); i < len(b)*8; i++ {
+		b[i/8] |= 0x80 >> (i % 8)
+	}
+	a, _ := netip.AddrFromSlice(b)
+	return a
+}
+
+// Validate checks one address list entry.
+func (e AddressEntry) Validate() error {
+	if err := ValidListName(e.List); err != nil {
+		return err
+	}
+	_, _, err := ParseListAddress(e.Address)
+	return err
+}
+
 // Validate checks one bridge entry.
 func (b Bridge) Validate() error {
 	if b.Name == "" || !validIface(b.Name) || strings.Contains(b.Name, "*") {
@@ -359,8 +444,8 @@ func (r FWRule) Validate() error {
 			return fmt.Errorf("the mangle chain only takes %s rules", ActionClampMSS)
 		}
 	case ChainMangleIn, ChainMangleOut:
-		if !marking {
-			return fmt.Errorf("the %s chain only takes %s and %s rules", r.Chain, ActionMarkConnection, ActionRestoreMark)
+		if !marking && r.Action != ActionAddSrcToList && r.Action != ActionAddDstToList {
+			return fmt.Errorf("the %s chain only takes %s, %s and the add-to-list rules", r.Chain, ActionMarkConnection, ActionRestoreMark)
 		}
 	}
 	switch r.Action {
@@ -384,6 +469,16 @@ func (r FWRule) Validate() error {
 		}
 		if r.MSS != 0 && (r.MSS < 536 || r.MSS > 9000) {
 			return fmt.Errorf("mss must be 0 (fit the route's MTU) or between 536 and 9000")
+		}
+	case ActionAddSrcToList, ActionAddDstToList:
+		if r.Chain == ChainMangle {
+			return fmt.Errorf("%s doesn't work in the mangle chain", r.Action)
+		}
+		if err := ValidListName(r.List); err != nil {
+			return fmt.Errorf("%s: %w", r.Action, err)
+		}
+		if r.Timeout < 0 || r.Timeout > MaxListTimeout {
+			return fmt.Errorf("timeout must be 0 (no expiry) to %d seconds", MaxListTimeout)
 		}
 	case "masquerade":
 		if r.Chain != ChainPostrouting {
@@ -414,6 +509,15 @@ func (r FWRule) Validate() error {
 	}
 	if !validIfaceMatch(r.InIface) || !validIfaceMatch(r.OutIface) {
 		return fmt.Errorf("invalid interface name")
+	}
+	for _, ref := range []string{r.SrcList, r.DstList} {
+		if ref == "" {
+			continue
+		}
+		name, _ := SplitListRef(ref)
+		if err := ValidListName(name); err != nil {
+			return err
+		}
 	}
 	switch r.Proto {
 	case "", "tcp", "udp", "icmp", "icmpv6":
@@ -453,6 +557,24 @@ func (c *Config) Validate() error {
 		}
 		seen[id] = true
 		return nil
+	}
+	inList := map[string]bool{}
+	for _, e := range c.AddressLists {
+		if err := check("address list entry", e.ID); err != nil {
+			return err
+		}
+		if err := e.Validate(); err != nil {
+			return fmt.Errorf("address list %s: %w", e.List, err)
+		}
+		if e.Disabled {
+			continue
+		}
+		first, last, _ := ParseListAddress(e.Address)
+		key := e.List + "|" + first.String() + "-" + last.String()
+		if inList[key] {
+			return fmt.Errorf("address list %s already has %s", e.List, e.Address)
+		}
+		inList[key] = true
 	}
 	bridgeName, portOf := map[string]bool{}, map[string]string{}
 	for _, b := range c.Bridges {
