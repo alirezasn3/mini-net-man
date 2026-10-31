@@ -1748,6 +1748,16 @@ sleep 1`)
 		t.Errorf("the ping should now get answered through the tunnel:\n%s", out)
 	}
 
+	t.Log("an incoming interface on that masquerade rule means it never matches the server's own traffic")
+	sh(t, "ip netns exec peer iptables -Z INPUT")
+	config(model.FWRule{Chain: "srcnat", Action: "masquerade", InIface: "wg", OutIface: "t0", SrcList: "!clients"})
+	ping()
+	up, own, other = seen()
+	if own != 0 || other == 0 {
+		t.Errorf("with an in_iface on the srcnat rule: uplink=%d tunnel(own src)=%d tunnel(uplink src)=%d; want it NOT to be masqueraded (locally created packets have no incoming interface)", up, own, other)
+	}
+	config(model.FWRule{Chain: "srcnat", Action: "masquerade", OutIface: "t0", SrcList: "!clients"})
+
 	t.Log("destinations not in the list keep using the uplink")
 	sh(t, "ip netns exec peer iptables -Z INPUT; ip netns exec peer ip addr add 203.0.113.10/32 dev lo")
 	try("ping -c 2 -W 1 -i 0.2 203.0.113.10")
