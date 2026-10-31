@@ -143,6 +143,23 @@ What to know:
 - Under the hood each list is four nftables sets (`<name>.s4`, `.s6` for your entries; `.d4`, `.d6` for what rules add). Because one comparison can't ask "in this set or that", a rule that matches a list is written once per set and family: a positive match on a list can be up to four rules in `nft list ruleset`, all with the same action. A dynamic set holds at most 131072 addresses; when it is full, new ones are not added.
 - List names start with a letter and have at most 24 characters (letters, digits, `_`, `-`, `.`).
 
+## Sending this server's own traffic through a tunnel
+
+To make the server itself reach some destinations (an address list, including domain names) through a tunnel, while its other traffic keeps using the normal uplink:
+
+1. **Address list**: put the destinations in a list, say `vpn` (IPs, networks, or names like `api.telegram.org`).
+2. **Firewall, `mangle-out`**: action `mark-connection`, *Mark* `69`, *Destination in address list* `vpn`. Traffic this server creates is marked, and the kernel looks the route up again with the mark.
+3. **Policy rule**: *Firewall mark* `69`, action `lookup`, table `200`. **Routes**: in table `200`, `default` via the tunnel interface. With several tunnels, repeat with rules at increasing priorities and a health check on each: the first healthy one wins.
+4. **Firewall, `srcnat`**: action `masquerade`, *Out interface* the tunnel (`wgBridge*`), and a source that is **only the server's own traffic**. Without this the packets leave through the tunnel still carrying the uplink's address as their source, which the far end's WireGuard `AllowedIPs` drops, and any reply would not come back that way. If this server also forwards clients whose addresses must stay visible (see "Replying on the interface a request came in on"), do not masquerade them: put your clients' network in an address list (`clients`) and use *Source in address list* `!clients`, so only the server's own address is rewritten. Keep that list filled, because `!` on an empty list matches everything.
+5. **Tuning**: set `rp_filter` to loose (2) or off, because the replies come back on the tunnel while the main table points at the uplink.
+
+Things to know:
+
+- **IPv6 is separate.** Policy rules and routes without an address are IPv4, so a marked IPv6 packet finds no table and goes out the uplink, unproxied. Applications that prefer IPv6 (a name with an AAAA record) then bypass the tunnel. Either route IPv6 too (a rule with *Family* IPv6, a `::/0` route in the table, IPv6 on the tunnel and a masquerade for it), or make marked IPv6 fail at once so applications fall back to IPv4: a policy rule with *Family* IPv6, *Firewall mark* `69`, action `unreachable`.
+- **No tunnel up means no tunnel.** If every health check is failing, the marked packets fall through to the normal route and go out the uplink. To stop that instead, add a last policy rule: *Firewall mark* `69`, action `unreachable` (at a priority after the tunnels'), so the destinations fail instead of leaking.
+- **Connections already open** when an address joins the list, and a name's address that changes while a connection is open, stay on their old path until they reconnect. Names are only as good as the addresses this machine's DNS returns.
+- Check with `ip route get <address> mark 69`, and with `tcpdump -ni <tunnel> host <address>`: the source address you see should be the tunnel's own.
+
 ## MSS clamping
 
 MikroTik's `/ip firewall mangle ... action=change-mss new-mss=1300` is a rule with action **clamp-mss** in the **mangle** chain. It rewrites the MSS in the SYN (and SYN-ACK) of TCP connections passing through, so both ends send packets that fit the smallest link on the path. Without it, a client with a 1500 MTU talking through a WireGuard exit (1420) or PPPoE (1492) relies on path-MTU discovery, and when an ICMP "fragmentation needed" message gets lost the symptom is a connection that works for small pages and then hangs on large downloads or TLS handshakes.

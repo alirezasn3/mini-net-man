@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -1675,5 +1676,82 @@ func TestMangleInKeepsGoing(t *testing.T) {
 	}
 	if got := markOf("9001", model.FWRule{Mark: 200, Src: "10.55.0.2"}, model.FWRule{Mark: 100}); got != "100" {
 		t.Errorf("the specific rule first: mark = %s, want 100 (the later rule still ran)", got)
+	}
+}
+
+// TestLocalTrafficToAListGoesThroughTheTunnel is the "send what this server
+// itself sends to these destinations through the VPN" setup: a mangle-out rule
+// marks traffic to an address list, a policy rule on the mark picks a table
+// whose default route is the tunnel. The peer counts what arrives on each of
+// its interfaces and from which source address, to show what really happens.
+func TestLocalTrafficToAListGoesThroughTheTunnel(t *testing.T) {
+	v := newEnv(t)
+	sh(t, `
+ip netns add peer
+ip link add u0 type veth peer name u1; ip link set u1 netns peer      # the ordinary uplink
+ip link add t0 type veth peer name t1; ip link set t1 netns peer      # stands in for the tunnel
+`+noRPFilter("u0")+`
+sysctl -qw net.ipv4.conf.t0.rp_filter=0
+ip addr add 10.60.0.1/24 dev u0; ip link set u0 up
+ip addr add 10.70.0.1/24 dev t0; ip link set t0 up
+ip route add default via 10.60.0.2 dev u0
+ip netns exec peer sh -c '
+  ip link set lo up; ip addr add 10.60.0.2/24 dev u1; ip link set u1 up
+  ip addr add 10.70.0.2/24 dev t1; ip link set t1 up
+  ip addr add 203.0.113.9/32 dev lo
+  sysctl -qw net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.u1.rp_filter=0 net.ipv4.conf.t1.rp_filter=0
+  iptables -A INPUT -i u1 -p icmp --icmp-type echo-request
+  iptables -A INPUT -i t1 -p icmp --icmp-type echo-request -s 10.70.0.1
+  iptables -A INPUT -i t1 -p icmp --icmp-type echo-request -s 10.60.0.1'
+sleep 1`)
+	t.Cleanup(func() { try("ip netns del peer") })
+	// How many echo requests the peer saw: via the uplink, via the tunnel with the
+	// tunnel's own address as source, via the tunnel with the uplink's address.
+	seen := func() (uplink, tunnelOwn, tunnelOther int) {
+		out := sh(t, "ip netns exec peer iptables -L INPUT -v -n -x | tail -n +3")
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		n := func(i int) int { f := strings.Fields(lines[i]); x, _ := strconv.Atoi(f[0]); return x }
+		return n(0), n(1), n(2)
+	}
+	ping := func() { try("ping -c 3 -W 1 -i 0.2 203.0.113.9") }
+
+	config := func(extra ...model.FWRule) {
+		rules := append([]model.FWRule{{Chain: "mangle-out", Action: "mark-connection", Mark: 69, DstList: "vpn"}}, extra...)
+		for i := range rules {
+			rules[i].ID = fmt.Sprintf("r%d", i)
+		}
+		v.update(t, func(c *model.Config) {
+			c.AddressLists = []model.AddressEntry{{ID: "a", List: "vpn", Address: "203.0.113.9"}, {ID: "b", List: "clients", Address: "10.0.0.0/16"}}
+			c.Routes = []model.Route{{ID: "t200", Dst: "default", Gateway: "10.70.0.2", Dev: "t0", Table: "200"}}
+			c.Rules = []model.Rule{{ID: "p200", Priority: 200, Fwmark: 69, Action: "lookup", Table: "200"}}
+			c.Firewall.Rules = rules
+		})
+	}
+
+	t.Log("marked, but nothing changes the source address")
+	config()
+	ping()
+	up, own, other := seen()
+	if up != 0 || other == 0 || own != 0 {
+		t.Errorf("without NAT: uplink=%d tunnel(own src)=%d tunnel(uplink src)=%d; want everything through the tunnel, still carrying the uplink's address", up, own, other)
+	}
+
+	t.Log("masquerade for what the server itself sends: the tunnel's own address is used")
+	sh(t, "ip netns exec peer iptables -Z INPUT")
+	config(model.FWRule{Chain: "srcnat", Action: "masquerade", OutIface: "t0", SrcList: "!clients"})
+	ping()
+	up, own, other = seen()
+	if up != 0 || own == 0 || other != 0 {
+		t.Errorf("with masquerade: uplink=%d tunnel(own src)=%d tunnel(uplink src)=%d; want only the tunnel, from its own address", up, own, other)
+	}
+	if out, err := try("ping -c 2 -W 1 203.0.113.9"); err != nil {
+		t.Errorf("the ping should now get answered through the tunnel:\n%s", out)
+	}
+
+	t.Log("destinations not in the list keep using the uplink")
+	sh(t, "ip netns exec peer iptables -Z INPUT; ip netns exec peer ip addr add 203.0.113.10/32 dev lo")
+	try("ping -c 2 -W 1 -i 0.2 203.0.113.10")
+	if out := sh(t, "ip netns exec peer iptables -L INPUT -v -n -x | tail -n +3 | head -1"); strings.Fields(out)[0] != "2" {
+		t.Errorf("a destination outside the list did not use the uplink:\n%s", out)
 	}
 }
