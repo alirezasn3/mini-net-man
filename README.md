@@ -18,7 +18,7 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 - **Ports**: which program is listening on which port (like `ss -tulnp`), and whether it is reachable from every interface or only this machine.
 - **Connections**: the kernel's connection-tracking table: every connection, including your VPN clients' traffic passing through. Each is labelled with its client, the exit interface and the NAT applied, and optionally bytes up and down. Filter by client, state or protocol.
 - **Tuning**: a curated set of kernel settings for a VPN gateway or router: BBR congestion control, queue discipline, socket buffers, MTU probing, connection-tracking size and timeouts, reverse-path filtering, ICMP redirects. Each has an explanation and a recommended value.
-- **Import**: adopts existing `ip rule`/`ip route`, `iptables-save`, ufw and iptables-persistent rules, and lists the ones it can't convert with the reason for each (a module with no equivalent, a jump to another chain, a negated match, ufw rate limiting, ...).
+- **Import**: adopts existing `ip rule`/`ip route`, `iptables-save`, ufw rules and the iptables rules your distribution restores at boot (iptables-persistent on Debian and Ubuntu, the `iptables` and `ip6tables` services on Alpine, iptables-services on Red Hat), and lists the ones it can't convert with the reason for each (a module with no equivalent, a jump to another chain, a negated match, ufw rate limiting, ...).
 - **Safe mode**: changes revert automatically unless you confirm, or if the browser disconnects.
 
 IPv4 and IPv6 are both supported. Linux only for the real backend (`-mock` runs anywhere).
@@ -46,6 +46,8 @@ sudo ./mini-net-man install
 ```
 
 `install` writes `/etc/init.d/mini-net-man` (supervised, so it restarts if it dies, with output in `/var/log/mini-net-man.log`), adds it to the `default` runlevel and starts it. `update` and the panel's update button restart it with `rc-service mini-net-man restart`. WireGuard and nftables need their kernel modules, which the stock `linux-lts` kernel has (add `wireguard` to `/etc/modules`).
+
+The panel behaves the same on Alpine and Ubuntu. The Overview page names the distribution and init system, lists the programs it uses with the command that installs each missing one for your package manager (`apk add`, `apt install`, `dnf install`, `pacman -S`), and warns about anything that would fight with it: ufw, firewalld, awall, saved iptables rules, an `nftables` service whose ruleset begins with `flush ruleset`, the system `dnsmasq` or `hostapd` service when you use those pages (with the command that turns it off: `systemctl disable --now` or `rc-service ... stop; rc-update del ...`), and NetworkManager, systemd-networkd, ifupdown, dhcpcd, ConnMan, iwd or wpa_supplicant claiming an interface.
 
 By default only the server itself may open the panel, so reach it through an SSH tunnel (`ssh -L 8080:127.0.0.1:8080 server`, then browse to `http://127.0.0.1:8080`). To open it to your own address instead:
 
@@ -173,7 +175,7 @@ Things to know:
 
 ## DHCP and DNS (dnsmasq)
 
-The **DHCP & DNS** page runs [dnsmasq](https://thekelleys.org.uk/dnsmasq/doc.html) for the devices on your interfaces. Install the program (`apt install dnsmasq-base`, or your distribution's `dnsmasq` package; the system service isn't needed and can stay off). mini-net-man starts **its own copy** as a child process with a config it writes itself under `services/` next to `config.yaml`, so it never edits `/etc/dnsmasq.conf` or `/etc/dnsmasq.d`, and stops it when it stops.
+The **DHCP & DNS** page runs [dnsmasq](https://thekelleys.org.uk/dnsmasq/doc.html) for the devices on your interfaces. Install the program (`apt install dnsmasq-base` on Debian and Ubuntu, `apk add dnsmasq` on Alpine, `dnf install dnsmasq` on Fedora; the panel prints the right command for its machine; the system service isn't needed and can stay off). mini-net-man starts **its own copy** as a child process with a config it writes itself under `services/` next to `config.yaml`, so it never edits `/etc/dnsmasq.conf` or `/etc/dnsmasq.d`, and stops it when it stops.
 
 - **Scopes**: one per interface. A first and last address, a lease time (`30m`, `12h`, `2d`, `infinite`; at least 2 minutes), and optionally the gateway and DNS servers handed to devices. Left empty, the gateway is this machine's address on the interface and the DNS server is this machine (when DNS is on). The interface needs an address of its own in the same network (add one on the Interfaces page).
 - **Fixed addresses**: a MAC address always gets one address (and an optional name that also becomes a DNS name). *Make fixed* on a lease in the list creates one from it.
@@ -185,7 +187,7 @@ The **DHCP & DNS** page runs [dnsmasq](https://thekelleys.org.uk/dnsmasq/doc.htm
 
 ## Wi-Fi access points (hostapd)
 
-The **Wi-Fi** page turns a wireless interface into an access point with [hostapd](https://w1.fi/hostapd/) (`apt install hostapd`; leave its system service off). One hostapd per access point runs as a child process with a config mini-net-man writes under `services/` (mode 0600, since it holds the password), restarted if it dies and stopped with mini-net-man.
+The **Wi-Fi** page turns a wireless interface into an access point with [hostapd](https://w1.fi/hostapd/) (`apt install hostapd`, `apk add hostapd`, `dnf install hostapd`; leave its system service off). One hostapd per access point runs as a child process with a config mini-net-man writes under `services/` (mode 0600, since it holds the password), restarted if it dies and stopped with mini-net-man.
 
 - **Settings**: network name, security (WPA2 + WPA3, WPA2, WPA3, or open), password, band (2.4 or 5 GHz), channel (0 asks the driver to choose, if it can), country code (required for 5 GHz: it decides the allowed channels and power), 802.11n/ac/ax, hidden network, client isolation, most devices.
 - **Passwords are never shown again.** The panel and API return `has_passphrase`, never the password, and the generated-config view hides it; leave the field empty when editing to keep it. A WPA3 password must be 8 to 63 characters; WPA2 also takes a 64-digit key.

@@ -92,3 +92,32 @@ func TestDetectIfupdown(t *testing.T) {
 		t.Errorf("ifupdown: %+v", r.Managers)
 	}
 }
+
+func TestDetectWpaSupplicantAndIwd(t *testing.T) {
+	root := t.TempDir()
+	put(t, root, "/run/wpa_supplicant/wlan0", "")
+	put(t, root, "/run/wpa_supplicant/p2p-dev-wlan0", "")
+	put(t, root, "/run/wpa_supplicant/wlan1", "")
+	h := Host{Root: root,
+		Comm: func() []string { return []string{"NetworkManager", "wpa_supplicant"} },
+		Run:  func(string, ...string) (string, error) { return "wlan0:connected\n", nil }}
+	r := h.Detect(nil)
+	if m := ids(r)["wpa_supplicant"]; !m.Running || !strings.Contains(m.Detail, "2 interfaces") {
+		t.Errorf("wpa_supplicant: %+v", r.Managers)
+	}
+	if got := r.Links["wlan0"]; len(got) != 1 || got[0] != "NetworkManager" {
+		t.Errorf("wlan0 belongs to NetworkManager, not also wpa_supplicant: %v", got)
+	}
+	if got := r.Links["wlan1"]; len(got) != 1 || got[0] != "wpa_supplicant" {
+		t.Errorf("wlan1: %v", got)
+	}
+	if len(r.Links["p2p-dev-wlan0"]) != 0 {
+		t.Errorf("p2p device is not an interface to warn about: %v", r.Links)
+	}
+
+	put(t, root, "/var/lib/iwd/home.psk", "")
+	r = Host{Root: root, Comm: func() []string { return []string{"iwd"} }}.Detect(nil)
+	if m := ids(r)["iwd"]; !m.Running || !m.Config {
+		t.Errorf("iwd: %+v", r.Managers)
+	}
+}

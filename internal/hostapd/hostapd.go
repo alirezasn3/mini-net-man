@@ -4,6 +4,7 @@
 package hostapd
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/alirezasn3/mini-net-man/internal/distro"
 	"github.com/alirezasn3/mini-net-man/internal/model"
 )
 
@@ -102,7 +104,11 @@ func Render(ap model.AccessPoint, dir string) string {
 func Find() (string, error) {
 	p, err := exec.LookPath("hostapd")
 	if err != nil {
-		return "", fmt.Errorf("hostapd is not installed (for example: apt install hostapd)")
+		msg := "hostapd is not installed"
+		if c := distro.Detect().InstallCmd("hostapd"); c != "" {
+			msg += " (install it with: " + c + "; the system service is not needed)"
+		}
+		return "", errors.New(msg)
 	}
 	return p, nil
 }

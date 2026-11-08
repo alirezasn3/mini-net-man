@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alirezasn3/mini-net-man/internal/distro"
 	"github.com/alirezasn3/mini-net-man/internal/engine"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
@@ -43,11 +44,9 @@ func (p *Proposal) skip(source, text, reason string) {
 }
 
 const (
-	UFWUserRules    = "/etc/ufw/user.rules"
-	UFWUserRules6   = "/etc/ufw/user6.rules"
-	UFWDefaults     = "/etc/default/ufw"
-	PersistentRule  = "/etc/iptables/rules.v4"
-	PersistentRule6 = "/etc/iptables/rules.v6"
+	UFWUserRules  = "/etc/ufw/user.rules"
+	UFWUserRules6 = "/etc/ufw/user6.rules"
+	UFWDefaults   = "/etc/default/ufw"
 )
 
 // Scan collects proposals from every source that exists on this machine.
@@ -60,9 +59,11 @@ func Scan(k kernel.Kernel) Proposal {
 			ParseUFW(string(b), string(def), f.family, &p)
 		}
 	}
-	for _, f := range []struct{ path, family string }{{PersistentRule, "ipv4"}, {PersistentRule6, "ipv6"}} {
-		if b, err := os.ReadFile(f.path); err == nil {
-			ParseIptablesSave(string(b), "iptables-persistent", f.family, &p)
+	// Rules saved to be restored at boot: iptables-persistent on Debian and
+	// Ubuntu, the iptables service on Alpine, iptables-services on Red Hat.
+	for _, f := range distro.IptablesFiles() {
+		if b, err := os.ReadFile(f.Path); err == nil {
+			ParseIptablesSave(string(b), f.Label, f.Family, &p)
 		}
 	}
 	for _, f := range []struct{ tool, family, label string }{
@@ -127,7 +128,7 @@ func ParseIptablesSave(text, source, family string, p *Proposal) {
 	ufwInternal := 0
 	sc := bufio.NewScanner(strings.NewReader(text))
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+		line := stripCounters(strings.TrimSpace(sc.Text()))
 		switch {
 		case strings.HasPrefix(line, "*"):
 			table = line[1:]
@@ -164,6 +165,17 @@ func ParseIptablesSave(text, source, family string, p *Proposal) {
 	if ufwInternal > 0 {
 		p.Notes = append(p.Notes, fmt.Sprintf("%s: %d rule(s) in ufw's own chains were not listed; ufw's rules are imported from its rule files instead", source, ufwInternal))
 	}
+}
+
+// stripCounters drops the "[packets:bytes] " prefix that iptables-save -c puts
+// before a rule, which Alpine's iptables service saves with.
+func stripCounters(line string) string {
+	if strings.HasPrefix(line, "[") {
+		if end := strings.Index(line, "] "); end > 0 && strings.Contains(line[:end], ":") {
+			return strings.TrimSpace(line[end+2:])
+		}
+	}
+	return line
 }
 
 // tokens splits a rule into words, keeping "quoted text" together (iptables

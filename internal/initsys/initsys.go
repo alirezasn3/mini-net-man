@@ -32,8 +32,9 @@ type Spec struct {
 
 // Status is what the init system says about a service.
 type Status struct {
-	Exists bool
-	Active bool
+	Exists  bool
+	Active  bool
+	Enabled bool // starts at boot
 }
 
 // Detect reports which init system this machine runs. systemd wins when both
@@ -111,13 +112,13 @@ func (k Kind) Status(name string) (Status, error) {
 		if err != nil || st == nil {
 			return Status{}, err
 		}
-		return Status{Exists: st.Exists, Active: st.Active}, nil
+		return Status{Exists: st.Exists, Active: st.Active, Enabled: st.Enabled}, nil
 	case OpenRC:
 		st, err := goOpenRC.StatusService(name)
 		if err != nil || st == nil {
 			return Status{}, err
 		}
-		return Status{Exists: st.Exists, Active: st.Active}, nil
+		return Status{Exists: st.Exists, Active: st.Active, Enabled: st.Enabled}, nil
 	}
 	return Status{}, ErrNone
 }
@@ -167,6 +168,22 @@ func (k Kind) RestartCmd(name string) string {
 		return "rc-service " + name + " restart"
 	}
 	return "systemctl restart " + name
+}
+
+// InUse reports whether the named service, one that is not ours, is running or
+// starts at boot. A service that does not exist, or an init system that cannot
+// be asked, is not in use.
+func (k Kind) InUse(name string) bool {
+	st, err := k.Status(name)
+	return err == nil && st.Exists && (st.Active || st.Enabled)
+}
+
+// DisableCmd is the command that stops a service and keeps it from starting.
+func (k Kind) DisableCmd(name string) string {
+	if k == OpenRC {
+		return "rc-service " + name + " stop; rc-update del " + name
+	}
+	return "systemctl disable --now " + name
 }
 
 // LogsHint says where the service's output goes.

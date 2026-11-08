@@ -334,7 +334,7 @@ All `GET`, all safe for a read-only token.
 
 | Call | Returns |
 |---|---|
-| `GET /api/overview` | Hostname, version, links, forwarding state, detected tools and warnings, current `issues`, safe mode status, and item `counts`. |
+| `GET /api/overview` | Hostname, version, links, forwarding state, `detect` (`distro`, `init` (`systemd`, `openrc` or empty), `tools` (each with `name`, `installed`, `path`, `purpose` and, when missing, the `hint` command that installs it), `iptables_persistent_files` (saved iptables rule files found: Debian's `rules.v4`/`rules.v6`, Alpine's `rules-save`/`rules6-save`, Red Hat's `/etc/sysconfig/iptables`), and `warnings`), current `issues`, safe mode status, and item `counts`. |
 | `GET /api/links` | Every interface: `name`, `index`, `type`, `up`, `running`, `mtu`, `mac`, `addrs`, `rx_bytes`, `tx_bytes`, and, when they apply, `master` (its bridge) and `managed_by` (an array of `NetworkManager`, `systemd-networkd`, `mini-net-man`). |
 | `GET /api/network/managers` | What manages the network on this machine: `{"managers": [{"id", "name", "running", "config", "detail", "note"}]}` (NetworkManager, systemd-networkd, netplan, ifupdown, ConnMan, dhcpcd, netctl, wicd, DHCP clients, cloud-init). |
 | `GET /api/live/routes` | All routes in the kernel (except the `local` table). Items have `owned` (made by mini-net-man) and `proto` (`kernel`, `static`, `dhcp`, `mini-net-man`, ...). |

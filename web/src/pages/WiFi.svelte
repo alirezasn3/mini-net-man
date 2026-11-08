@@ -112,7 +112,9 @@
         {#if !s.process.installed && s.process.wanted}<p class="text-red-600 dark:text-red-400">{s.process.problem}</p>{/if}
         {#if !s.exists}<p class="text-red-600 dark:text-red-400">There is no interface called {s.interface} on this machine.</p>
         {:else if !s.wireless}<p class="text-amber-600 dark:text-amber-400">{s.interface} is not a Wi-Fi interface.</p>{/if}
-        {#if s.managed_by?.length}<p class="text-amber-600 dark:text-amber-400">⚠ {s.managed_by.join(' and ')} also manages {s.interface} and will fight hostapd for it. For NetworkManager: <span class="mono">nmcli device set {s.interface} managed no</span>.</p>{/if}
+        {#if s.managed_by?.length}<p class="text-amber-600 dark:text-amber-400">⚠ {s.managed_by.join(' and ')} also holds {s.interface} and will fight hostapd for it.
+          {#if s.managed_by.includes('NetworkManager')}For NetworkManager: <span class="mono">nmcli device set {s.interface} managed no</span>.{/if}
+          {#if s.managed_by.includes('wpa_supplicant')}For wpa_supplicant: stop it for this interface (<span class="mono">wpa_cli -i {s.interface} terminate</span>) and keep its service from starting it again.{/if}</p>{/if}
         {#if s.process.last_error && !s.process.running}<p class="text-red-600 dark:text-red-400">Stopped: {s.process.last_error}. The log below usually says why (a card without access point mode, a channel the country doesn't allow, rfkill).</p>{/if}
         {#if s.error}<p class="text-amber-600 dark:text-amber-400">{s.error}</p>{/if}
         {#if open[s.id] === 'log'}<pre class="mono max-h-64 overflow-auto rounded-md bg-slate-950 p-3 text-xs whitespace-pre-wrap">{s.process.log.join('\n') || 'No output yet.'}</pre>{/if}

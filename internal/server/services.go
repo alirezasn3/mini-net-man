@@ -352,3 +352,13 @@ func (s *Server) apKick(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]bool{"ok": true})
 }
+
+// wifiConfigured reports whether any access point is switched on.
+func wifiConfigured(cfg model.Config) bool {
+	for _, ap := range cfg.AccessPoints {
+		if !ap.Disabled {
+			return true
+		}
+	}
+	return false
+}

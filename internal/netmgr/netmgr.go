@@ -197,9 +197,28 @@ func (h Host) Detect(links []model.Link) Report {
 		}
 	}
 
+	// wpa_supplicant joins Wi-Fi networks. It keeps a control socket per
+	// interface it holds, and an interface it holds cannot also be an access point.
+	if comms["wpa_supplicant"] {
+		held := 0
+		for _, sock := range append(h.glob("/run/wpa_supplicant/*"), h.glob("/var/run/wpa_supplicant/*")...) {
+			dev := filepath.Base(sock)
+			if strings.HasPrefix(dev, "p2p-dev-") || dev == "global" {
+				continue
+			}
+			held++
+			if !hasString(r.Links[dev], "NetworkManager") && !hasString(r.Links[dev], "wpa_supplicant") {
+				r.Links[dev] = append(r.Links[dev], "wpa_supplicant")
+			}
+		}
+		add(Manager{ID: "wpa_supplicant", Name: "wpa_supplicant", Running: true, Detail: "running, holding " + plural(held, "interface", "interfaces"),
+			Note: "It connects the interfaces it holds to Wi-Fi networks, so one of them cannot also be an access point here. Stop it for that interface, or use another."})
+	}
+
 	for _, d := range []struct{ id, name, proc, dir, note string }{
 		{"connman", "ConnMan", "connmand", "/var/lib/connman", ""},
 		{"dhcpcd", "dhcpcd", "dhcpcd", "", "A DHCP client: it sets the address and default route of the interfaces it serves."},
+		{"iwd", "iwd", "iwd", "/var/lib/iwd", "It connects Wi-Fi interfaces to networks, so one of them cannot also be an access point here."},
 		{"wicd", "wicd", "wicd", "/etc/wicd", ""},
 		{"netctl", "netctl", "", "/etc/netctl", ""},
 	} {
@@ -233,4 +252,13 @@ func trimRoot(h Host, paths []string) []string {
 		out = append(out, strings.TrimPrefix(p, root))
 	}
 	return out
+}
+
+func hasString(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

@@ -6,6 +6,7 @@ package dnsmasq
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alirezasn3/mini-net-man/internal/distro"
 	"github.com/alirezasn3/mini-net-man/internal/model"
 )
 
@@ -242,7 +244,11 @@ func Leases(path string) ([]Lease, error) {
 func Find() (string, error) {
 	p, err := exec.LookPath("dnsmasq")
 	if err != nil {
-		return "", fmt.Errorf("dnsmasq is not installed (for example: apt install dnsmasq-base, or your distribution's dnsmasq package)")
+		msg := "dnsmasq is not installed"
+		if c := distro.Detect().InstallCmd("dnsmasq"); c != "" {
+			msg += " (install it with: " + c + "; the system service is not needed)"
+		}
+		return "", errors.New(msg)
 	}
 	return p, nil
 }

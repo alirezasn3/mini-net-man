@@ -102,13 +102,17 @@
         <h2 class="mb-3 text-sm font-semibold">Detected tools</h2>
         <ul class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
           {#each o.detect.tools as t}
-            <li class="flex items-center gap-2">
+            <li class="flex items-center gap-2" title={t.purpose + (!t.installed && t.hint ? ' (install: ' + t.hint + ')' : '')}>
               <span class="size-2 rounded-full {t.installed ? 'bg-accent-500' : 'bg-slate-300 dark:bg-slate-700'}"></span>
               <span class="mono">{t.name}</span>
             </li>
           {/each}
         </ul>
+        {#each o.detect.tools.filter((t) => !t.installed && t.hint && !t.purpose.startsWith('optional')) as t}
+          <p class="mt-3 text-sm text-amber-700 dark:text-amber-400"><span class="mono">{t.name}</span> is not installed, so {t.purpose} will not work. Install it: <span class="mono">{t.hint}</span></p>
+        {/each}
         <p class="mt-3 text-xs text-slate-500">
+          {o.detect.distro}{#if o.detect.init} · {o.detect.init}{/if} ·
           ufw: {o.detect.ufw_active ? 'active' : 'inactive'}
           {#if o.detect.iptables_backend} · iptables backend: {o.detect.iptables_backend}{/if}
         </p>
