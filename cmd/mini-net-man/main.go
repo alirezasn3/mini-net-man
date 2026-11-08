@@ -24,6 +24,7 @@ import (
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
 	"github.com/alirezasn3/mini-net-man/internal/server"
+	"github.com/alirezasn3/mini-net-man/internal/svc"
 	"github.com/alirezasn3/mini-net-man/internal/update"
 	"github.com/alirezasn3/mini-net-man/web"
 	"golang.org/x/crypto/bcrypt"
@@ -166,8 +167,10 @@ func run(args []string) error {
 
 	eng := engine.New(k, cfg, f.config, log)
 	if f.mock {
-		eng.SetLookup(dnslist.DemoLookup) // no network needed to try domain entries
+		eng.SetLookup(dnslist.DemoLookup)     // no network needed to try domain entries
+		eng.SetMockServices(svc.NewFake(log)) // nor dnsmasq or hostapd to try those pages
 	}
+	defer eng.Close()
 	eng.Start()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

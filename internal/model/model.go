@@ -16,6 +16,11 @@ type Config struct {
 	Sysctl        Sysctl         `yaml:"sysctl" json:"sysctl"`
 	AddressLists  []AddressEntry `yaml:"address_lists,omitempty" json:"address_lists"`
 	Bridges       []Bridge       `yaml:"bridges,omitempty" json:"bridges"`
+	DNSMasq       DNSMasq        `yaml:"dnsmasq,omitempty" json:"dnsmasq"`
+	DHCPScopes    []DHCPScope    `yaml:"dhcp_scopes,omitempty" json:"dhcp_scopes"`
+	DHCPHosts     []DHCPHost     `yaml:"dhcp_hosts,omitempty" json:"dhcp_hosts"`
+	DNSRecords    []DNSRecord    `yaml:"dns_records,omitempty" json:"dns_records"`
+	AccessPoints  []AccessPoint  `yaml:"access_points,omitempty" json:"access_points"`
 	Interfaces    []LinkSetting  `yaml:"interfaces,omitempty" json:"interfaces"`
 	Addresses     []Address      `yaml:"addresses" json:"addresses"`
 	Routes        []Route        `yaml:"routes" json:"routes"`
@@ -283,6 +288,8 @@ type Link struct {
 	MAC     string   `json:"mac"`
 	Addrs   []string `json:"addrs"`            // IPv4 and global IPv6
 	Master  string   `json:"master,omitempty"` // the bridge this interface is a port of
+	// Wireless is true for Wi-Fi interfaces, the ones an access point can use.
+	Wireless bool `json:"wireless,omitempty"`
 	// ManagedBy names what configures it: "NetworkManager", "systemd-networkd"
 	// or "mini-net-man". Empty means nothing does (by hand, or a tool that
 	// ran once at boot). Filled in by the server, not the kernel.
@@ -293,7 +300,7 @@ type Link struct {
 
 // Issue reports that one configured item could not be applied.
 type Issue struct {
-	Kind    string `json:"kind"` // address|route|rule|firewall|sysctl|bridge|interface
+	Kind    string `json:"kind"` // address|route|rule|firewall|sysctl|bridge|interface|dnsmasq|access point
 	ID      string `json:"id"`
 	Message string `json:"message"`
 }

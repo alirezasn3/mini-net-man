@@ -291,7 +291,7 @@
                 <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{col.label}</span>
                 <span class="min-w-0 break-words {long ? 'max-sm:text-left' : 'max-sm:text-right'}">
                   {v}
-                  {#if ci === 0}<span class="badge ml-2 bg-accent-600/20 text-accent-300" title="Created by Client Routing">generated</span>{/if}
+                  {#if ci === 0}<span class="badge ml-2 bg-accent-600/20 text-accent-300" title="Created by {item.source === 'client-routing' ? 'Client Routing' : item.source}">generated</span>{/if}
                 </span>
               </td>
             {/each}
@@ -352,6 +352,8 @@
                   <select id="f-{f.key}" class="input" bind:value={draft[f.key]}>
                     {#each f.options as o}<option value={o.value ?? o}>{o.label ?? o}</option>{/each}
                   </select>
+                {:else if f.type === 'password'}
+                  <input id="f-{f.key}" type="password" class="input" bind:value={draft[f.key]} placeholder={f.placeholder ?? ''} autocomplete="new-password" spellcheck="false" />
                 {:else if f.type === 'number'}
                   <input id="f-{f.key}" type="number" class="input" bind:value={draft[f.key]} placeholder={f.placeholder ?? ''} />
                 {:else}

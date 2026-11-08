@@ -49,6 +49,8 @@ func NewMock() *Mock {
 	add("wgServer", "wireguard", true, "10.0.0.1/16", "fd00:10::1/64")
 	add("wgBridge0", "wireguard", true, "10.8.0.2/32", "fd00:8::2/128")
 	add("wgBridge1", "wireguard", true, "10.9.0.2/32")
+	add("wlan0", "device", false)
+	m.links[len(m.links)-1].Wireless = true
 	m.dyn = []DynAddr{{List: "ssh-stage1", Address: "203.0.113.50", Remaining: 540}, {List: "ssh-blocked", Address: "198.51.100.23", Remaining: 86100}, {List: "ssh-blocked", Address: "2001:db8::bad", Remaining: 0}}
 	m.routes = []LiveRoute{
 		{Route: model.Route{Dst: "default", Gateway: "192.168.71.1", Dev: "ens192", Table: "main", Metric: 100}, Proto: "static"},

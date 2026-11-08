@@ -7,6 +7,7 @@ import (
 	"net"
 	"sort"
 
+	"github.com/alirezasn3/mini-net-man/internal/dnsmasq"
 	"github.com/alirezasn3/mini-net-man/internal/model"
 )
 
@@ -26,6 +27,7 @@ type Desired struct {
 	Routes     []model.Route
 	Rules      []model.Rule
 	Firewall   model.Firewall
+	DHCP       dnsmasq.Input // what dnsmasq should do (Dir is filled in by the engine)
 }
 
 const (
@@ -108,6 +110,29 @@ func Expand(cfg model.Config, ifaceNets func(iface string) []string, down func(c
 		if !r.Disabled {
 			d.Firewall.Rules = append(d.Firewall.Rules, r)
 		}
+	}
+
+	// The DHCP and DNS server must be reachable on its interfaces even when the
+	// input policy is drop, so its accept rules are generated, ahead of yours.
+	d.DHCP = DNSMasqInput(cfg, "")
+	if in := d.DHCP; in.Enabled() {
+		var gen []model.FWRule
+		accept := func(id, proto, port, iface string) {
+			gen = append(gen, model.FWRule{ID: id, Chain: model.ChainInput, Action: "accept", InIface: iface, Proto: proto, DstPort: port,
+				Comment: "DHCP and DNS", Source: "dnsmasq"})
+		}
+		for _, s := range cfg.DHCPScopes {
+			if !s.Disabled {
+				accept("gen-dhcp-"+s.Interface, "udp", "67", s.Interface)
+			}
+		}
+		if in.ServesDNS() {
+			for _, i := range in.Interfaces() {
+				accept("gen-dns-udp-"+i, "udp", "53", i)
+				accept("gen-dns-tcp-"+i, "tcp", "53", i)
+			}
+		}
+		d.Firewall.Rules = append(gen, d.Firewall.Rules...)
 	}
 
 	cr := cfg.ClientRouting

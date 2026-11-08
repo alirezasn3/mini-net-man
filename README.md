@@ -6,6 +6,8 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 - **Routes** and **policy rules**: `ip route … table N` and `ip rule … priority N`, created by hand.
 - **Interfaces and bridges**: bring interfaces up or down, set their MTU, build bridges and choose their ports, all kept in place by the reconcile loop. The page also says what else manages the network (NetworkManager, systemd-networkd, netplan, ifupdown, ...) and which interfaces each one claims.
 - **Address lists**: named lists of IPs, networks and ranges, like MikroTik's address lists. Firewall rules match a list (or "not in" it) and can add the source or destination of matching traffic to a list for a while: blocklists, whitelists, and "block anyone who keeps trying SSH".
+- **DHCP and DNS** (dnsmasq): DHCP scopes with fixed addresses, a DNS server with local records and aliases, a live lease list, and the firewall rules to reach it generated for you.
+- **Wi-Fi access points** (hostapd): turn a Wi-Fi card into an access point (WPA2/WPA3, 2.4 or 5 GHz, optional bridge and client isolation) and see and disconnect connected devices.
 - **Sorting**: click a column heading on any list (routes, policy rules, firewall rules, …) to sort it ascending, again for descending, a third time to go back. It only changes the view, is remembered in your browser, and never changes the order rules are applied in; moving firewall rules is off while a sort is active.
 - **HTTP API**: everything the panel does is a JSON API that other programs can call with an API token (made in Settings, optionally read-only).
 - **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically. Interface fields take a trailing `*` as a wildcard (`wg*` matches `wg0` and `wgBridge1`). Each chain's default action (accept, drop or reject) is the last row of the rule list and editable there.
@@ -159,6 +161,29 @@ Things to know:
 - **No tunnel up means no tunnel.** If every health check is failing, the marked packets fall through to the normal route and go out the uplink. To stop that instead, add a last policy rule: *Firewall mark* `69`, action `unreachable` (at a priority after the tunnels'), so the destinations fail instead of leaking.
 - **Connections already open** when an address joins the list, and a name's address that changes while a connection is open, stay on their old path until they reconnect. Names are only as good as the addresses this machine's DNS returns.
 - Check with `ip route get <address> mark 69`, and with `tcpdump -ni <tunnel> host <address>`: the source address you see should be the tunnel's own.
+
+## DHCP and DNS (dnsmasq)
+
+The **DHCP & DNS** page runs [dnsmasq](https://thekelleys.org.uk/dnsmasq/doc.html) for the devices on your interfaces. Install the program (`apt install dnsmasq-base`, or your distribution's `dnsmasq` package; the system service isn't needed and can stay off). mini-net-man starts **its own copy** as a child process with a config it writes itself under `services/` next to `config.yaml`, so it never edits `/etc/dnsmasq.conf` or `/etc/dnsmasq.d`, and stops it when it stops.
+
+- **Scopes**: one per interface. A first and last address, a lease time (`30m`, `12h`, `2d`, `infinite`; at least 2 minutes), and optionally the gateway and DNS servers handed to devices. Left empty, the gateway is this machine's address on the interface and the DNS server is this machine (when DNS is on). The interface needs an address of its own in the same network (add one on the Interfaces page).
+- **Fixed addresses**: a MAC address always gets one address (and an optional name that also becomes a DNS name). *Make fixed* on a lease in the list creates one from it.
+- **DNS**: answers questions on the scopes' interfaces and any others you add, forwarding to the upstream servers you choose (or `/etc/resolv.conf`). **DNS records** answer a name locally: an IP address (IPv4 or IPv6), or another name to make an alias. A name covers exactly that name. The **local domain** makes bare names (`nas`) answer from your records and fixed addresses and is handed to devices as their search domain.
+- **Leases**: the live list, read from dnsmasq's lease file, which survives restarts.
+- **Firewall**: with an `input` policy of drop, devices couldn't reach it. mini-net-man adds accept rules for DHCP (UDP 67) and DNS (UDP and TCP 53) on exactly the interfaces it serves, ahead of yours, shown as *generated* on the Firewall page and gone when you switch it off.
+- **Problems are shown on the page**: a missing program, another program already using port 53 or 67 (it names it), a config dnsmasq rejects (the working one keeps running), and dnsmasq's own log. *Generated config* shows exactly what it was started with.
+- A change restarts dnsmasq (a second or less), and so does restarting or updating mini-net-man; devices keep their leases through it. DHCP for IPv4 only: no DHCPv6 or router advertisements.
+
+## Wi-Fi access points (hostapd)
+
+The **Wi-Fi** page turns a wireless interface into an access point with [hostapd](https://w1.fi/hostapd/) (`apt install hostapd`; leave its system service off). One hostapd per access point runs as a child process with a config mini-net-man writes under `services/` (mode 0600, since it holds the password), restarted if it dies and stopped with mini-net-man.
+
+- **Settings**: network name, security (WPA2 + WPA3, WPA2, WPA3, or open), password, band (2.4 or 5 GHz), channel (0 asks the driver to choose, if it can), country code (required for 5 GHz: it decides the allowed channels and power), 802.11n/ac/ax, hidden network, client isolation, most devices.
+- **Passwords are never shown again.** The panel and API return `has_passphrase`, never the password, and the generated-config view hides it; leave the field empty when editing to keep it. A WPA3 password must be 8 to 63 characters; WPA2 also takes a 64-digit key.
+- **Bridge**: set the access point's *Bridge* so hostapd adds it to that bridge and its devices share the bridge's network and DHCP. Don't also list the Wi-Fi interface as a bridge port (the panel refuses it): hostapd does the joining. Without a bridge, give the interface an address and a DHCP scope.
+- **Live view**: connected devices with signal strength, time connected and traffic (read from hostapd's control socket), and *Disconnect* (it may reconnect at once; this is not a ban).
+- **Requirements**: a card and driver that support access point mode (`iw list` shows "AP" under supported interface modes), no rfkill block, and nothing else controlling the interface. If NetworkManager or systemd-networkd also manages it, the page warns and says how to hand it over (`nmcli device set wlan0 managed no`). The log on the page shows why hostapd stopped.
+- Not covered: WPA-Enterprise (RADIUS), 6 GHz, multiple SSIDs on one card, and DFS channel selection beyond what the driver does.
 
 ## MSS clamping
 

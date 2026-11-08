@@ -52,7 +52,7 @@ func (Linux) Links() ([]model.Link, error) {
 	for _, l := range links {
 		at := l.Attrs()
 		m := model.Link{
-			Name: at.Name, Index: at.Index, Type: l.Type(), Master: names[at.MasterIndex],
+			Name: at.Name, Index: at.Index, Type: l.Type(), Master: names[at.MasterIndex], Wireless: isWireless(at.Name),
 			Up:      at.Flags&net.FlagUp != 0,
 			Running: at.Flags&net.FlagRunning != 0,
 			MTU:     at.MTU, MAC: at.HardwareAddr.String(), Addrs: byIdx[at.Index],
@@ -139,6 +139,17 @@ func (Linux) SetMaster(iface, bridge string) error {
 		return err
 	}
 	return netlink.LinkSetMaster(l, b)
+}
+
+// isWireless tells a Wi-Fi interface by the directories the wireless stack
+// gives it in sysfs.
+func isWireless(name string) bool {
+	for _, p := range []string{"wireless", "phy80211"} {
+		if _, err := os.Stat("/sys/class/net/" + name + "/" + p); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (Linux) ListAddrs() ([]Addr, error) {

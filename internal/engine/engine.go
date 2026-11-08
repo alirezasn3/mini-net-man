@@ -17,6 +17,7 @@ import (
 	"github.com/alirezasn3/mini-net-man/internal/health"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
+	"github.com/alirezasn3/mini-net-man/internal/svc"
 	"github.com/alirezasn3/mini-net-man/internal/tuning"
 	"gopkg.in/yaml.v3"
 )
@@ -38,6 +39,7 @@ type Engine struct {
 
 	mon *health.Monitor   // pings for the health checks rules can depend on
 	res *dnslist.Resolver // keeps the addresses of domain names in address lists
+	svc *services         // dnsmasq and hostapd, run as child processes
 }
 
 type safeSession struct {
@@ -57,6 +59,7 @@ func New(k kernel.Kernel, cfg model.Config, path string, log *slog.Logger) *Engi
 	e := &Engine{k: k, cfg: cfg, path: path, log: log}
 	e.mon = health.New(k, e.healthChanged)
 	e.res = dnslist.New(k, dnslist.SystemLookup, log)
+	e.svc = newServices(svc.New(log))
 	return e
 }
 
@@ -147,7 +150,7 @@ func (e *Engine) Run(ctx context.Context) {
 	var recent []time.Time // event-driven reconciles that really changed something
 	wait, nextRetry := retryMin, time.Time{}
 	defer e.mon.Stop()
-	defer e.res.Close()
+	defer e.Close()
 	for {
 		select {
 		case <-ctx.Done():
@@ -240,6 +243,12 @@ func (e *Engine) Converge() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.applyLocked(false)
+}
+
+// Close stops the helper programs and the name lookups. Safe to call twice.
+func (e *Engine) Close() {
+	e.res.Close()
+	e.svc.sup.Close()
 }
 
 // SetLookup changes how domain names in address lists are resolved (the
@@ -509,6 +518,8 @@ func (e *Engine) applyLocked(force bool) int {
 	if rebuilt {
 		e.res.Kick()
 	}
+
+	e.applyServicesLocked(d, add)
 
 	// Byte counting is a conntrack setting, which only exists once something
 	// (the firewall above, usually) has loaded connection tracking.

@@ -6,7 +6,7 @@ Everything the web panel does goes through this JSON API, so any program can do 
 - [Authentication](#authentication)
 - [Conventions](#conventions)
 - [Safe mode from a script](#safe-mode-from-a-script)
-- [Items you manage](#items-you-manage): addresses, address lists, routes, policy rules, firewall rules, bridges, interface settings, health checks, client routing
+- [Items you manage](#items-you-manage): addresses, address lists, DHCP and DNS, Wi-Fi access points, routes, policy rules, firewall rules, bridges, interface settings, health checks, client routing
 - [Other settings](#other-settings): firewall policy, client routing switch, kernel settings, reapply
 - [Looking at the machine](#looking-at-the-machine)
 - [Panel, accounts and updates](#panel-accounts-and-updates)
@@ -66,7 +66,7 @@ The panel itself uses a cookie session from `POST /api/login` (`{"username": "..
 
 `kind` is one of `address`, `route`, `rule`, `firewall`, `sysctl`, `bridge`, `interface`. Items that couldn't be applied are retried automatically with a growing delay, and again whenever the kernel's interfaces, addresses or routes change. The current list is also in `GET /api/overview` under `issues`.
 
-**Lists.** Items you manage all share the same calls (`<list>` is `routes`, `rules`, `addresses`, `address-lists`, `bridges`, `interfaces`, `checks`, `firewall/rules` or `client-routing/clients`):
+**Lists.** Items you manage all share the same calls (`<list>` is `routes`, `rules`, `addresses`, `address-lists`, `bridges`, `dhcp/scopes`, `dhcp/hosts`, `dns/records`, `interfaces`, `checks`, `firewall/rules` or `client-routing/clients`):
 
 | Call | What it does |
 |---|---|
@@ -135,6 +135,64 @@ Two more calls work on lists:
 | `GET /api/address-lists/dynamic` | The addresses in lists that did not come from your entries: what `add-src-to-list` and `add-dst-to-list` rules put there, and what domain names resolved to: `[{"list": "ssh-blocked", "address": "198.51.100.23", "remaining": 86100}, {"list": "cdn", "address": "203.0.113.7", "remaining": 330, "domain": "example.com"}]`. `remaining` is the seconds left, or `0` for an entry that doesn't expire; `domain` is set when the address came from a name. These live in the kernel, not in `config.yaml`. |
 | `GET /api/address-lists/domains` | One item per domain name entry: `{"list", "domain", "addresses": [...], "resolved_at", "next_at", "error"}`. `resolved_at` is empty until the first answer; `error` says why the last lookup failed (the addresses it already has stay until they expire). |
 | `DELETE /api/address-lists/dynamic?list=NAME&address=IP` | Removes one such address. With only `list`, empties that list's added addresses; with neither, empties all of them. A resolved address you remove comes back at the name's next lookup; delete the entry to stop it. |
+
+### DHCP and DNS (dnsmasq)
+
+mini-net-man runs its own dnsmasq. The settings are one object; scopes, fixed addresses and DNS records are lists with the usual calls.
+
+**Settings: `GET` and `PUT /api/dnsmasq`**
+
+| Field | Meaning |
+|---|---|
+| `enabled` (boolean) | Run dnsmasq. It only runs if there is also a scope or DNS to serve. |
+| `dns` (boolean) | Answer DNS queries, on the interfaces of the scopes and `interfaces`. |
+| `interfaces` (array) | Extra interfaces to answer DNS on. |
+| `upstreams` (array) | DNS servers to forward to: `1.1.1.1` or `1.1.1.1#5353`. Empty uses `/etc/resolv.conf`. |
+| `domain` | The local domain (`lan`). |
+| `cache_size` (number) | 0 means 1000; at most 10000. |
+
+**Scopes: `/api/dhcp/scopes`**: `interface` (required, one scope per interface), `start` and `end` (IPv4, required), `lease_time` (`30m`, `12h`, `2d`, seconds, or `infinite`; at least 2 minutes; empty means 12h), `router` (an IPv4 address, `none`, or empty for this machine), `dns` (array of IPv4 addresses; empty means this machine when it answers DNS), `domain`, `name`, `comment`, `disabled`.
+
+**Fixed addresses: `/api/dhcp/hosts`**: `mac` (required; any common spelling is accepted), `ip` (required, IPv4), `hostname`, `comment`, `disabled`. A MAC, and an address, can be used once.
+
+**DNS records: `/api/dns/records`**: `name` (required), `address` (an IP address, IPv4 or IPv6, or another name to make an alias), `comment`, `disabled`.
+
+**Reading the state**
+
+| Call | Returns |
+|---|---|
+| `GET /api/dnsmasq/status` | `{"installed", "path", "version", "problem", "wanted", "running", "since", "restarts", "last_error", "log": [...], "conflicts": [...]}`. `problem` says why dnsmasq can't start (not installed); `wanted` is whether the config asks for it to run; `conflicts` names other programs already listening on port 53 or 67; `log` is its latest output. |
+| `GET /api/dhcp/leases` | `[{"mac", "ip", "hostname", "expires", "remaining", "static"}]`: the devices that have an address now. `remaining` is seconds left (0 for infinite) and `static` says it is one of your fixed addresses. |
+| `GET /api/services/config` | `{"dnsmasq": "...", "hostapd": {"wlan0": "..."}}`: the generated config files, with Wi-Fi passwords replaced by `********`. |
+
+While dnsmasq runs, the panel adds accept rules for it to the firewall `input` chain (UDP 67, UDP and TCP 53, on its interfaces). They appear in `GET /api/generated` under `firewall`, with `source` set to `dnsmasq`.
+
+### Wi-Fi access points (hostapd): `/api/access-points`
+
+One hostapd runs per enabled access point. The calls are the usual ones **except that the password is never returned**: items have `has_passphrase` instead of `passphrase`, and `PUT` with an empty `passphrase` keeps the stored one (set `security` to `open` to remove it).
+
+| Field | Meaning |
+|---|---|
+| `interface` | The wireless interface. Required, one access point per interface. It may not also be a port of a bridge. |
+| `ssid` | The network name, 1 to 32 bytes. Required. |
+| `security` | `open`, `wpa2`, `wpa3` or `wpa2+wpa3`. Required. |
+| `passphrase` | 8 to 63 ASCII characters (WPA2 also takes a 64-digit hex key). Write-only. Required unless `open`. |
+| `band` | `2.4` or `5`. Required. |
+| `channel` (number) | 1 to 14 on 2.4 GHz, 36 to 165 on 5 GHz, or 0 to let the driver choose. |
+| `country` | Two capital letters. Required for 5 GHz. |
+| `bridge` | Add the interface to this bridge (hostapd joins it). |
+| `hidden`, `isolate` (boolean) | Don't announce the name; keep devices from reaching each other. |
+| `max_clients` (number) | 0 leaves it to the driver. |
+| `n`, `ac`, `ax` (boolean) | 802.11n, ac (5 GHz only), ax. |
+| `comment`, `disabled` | |
+
+| Call | Does |
+|---|---|
+| `GET /api/access-points/status` | One item per access point: `{"id", "interface", "exists", "wireless", "managed_by", "process": {<same as the dnsmasq status>}, "radio": {"state", "channel", "freq", "clients"}, "stations": [{"mac", "flags", "signal", "connected_secs", "inactive_ms", "rx_bytes", "tx_bytes", "rx_packets", "tx_packets"}], "error"}`. `radio` and `stations` are present while hostapd runs; `managed_by` lists other programs (NetworkManager, systemd-networkd) that also manage the interface. |
+| `POST /api/access-points/{id}/kick` | Body `{"mac": "aa:bb:cc:dd:ee:ff"}`: disconnects that device (it may reconnect). |
+| `POST /api/access-points/delete` | `{"ids": [...]}` as for the other lists. |
+
+`GET /api/links` marks Wi-Fi interfaces with `"wireless": true`.
 
 ### Routes: `/api/routes`
 

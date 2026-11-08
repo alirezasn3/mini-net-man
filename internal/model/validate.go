@@ -642,6 +642,9 @@ func (c *Config) Validate() error {
 		}
 		inList[key] = true
 	}
+	if err := c.validateServices(check); err != nil {
+		return err
+	}
 	bridgeName, portOf := map[string]bool{}, map[string]string{}
 	for _, b := range c.Bridges {
 		if err := check("bridge", b.ID); err != nil {

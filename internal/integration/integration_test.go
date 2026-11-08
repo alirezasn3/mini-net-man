@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -21,8 +22,10 @@ import (
 
 	"github.com/alirezasn3/mini-net-man/internal/conns"
 	"github.com/alirezasn3/mini-net-man/internal/dnslist"
+	"github.com/alirezasn3/mini-net-man/internal/dnsmasq"
 	"github.com/alirezasn3/mini-net-man/internal/engine"
 	"github.com/alirezasn3/mini-net-man/internal/health"
+	"github.com/alirezasn3/mini-net-man/internal/hostapd"
 	"github.com/alirezasn3/mini-net-man/internal/importer"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
@@ -1763,5 +1766,143 @@ sleep 1`)
 	try("ping -c 2 -W 1 -i 0.2 203.0.113.10")
 	if out := sh(t, "ip netns exec peer iptables -L INPUT -v -n -x | tail -n +3 | head -1"); strings.Fields(out)[0] != "2" {
 		t.Errorf("a destination outside the list did not use the uplink:\n%s", out)
+	}
+}
+
+// TestDnsmasq runs the real dnsmasq through mini-net-man: a device on the far
+// side of a veth pair gets an address by DHCP (its fixed one), learns the
+// gateway and DNS server, and resolves a local name, all with the input policy
+// on drop, so the generated firewall rules are what lets it through.
+func TestDnsmasq(t *testing.T) {
+	if _, err := exec.LookPath("dnsmasq"); err != nil {
+		t.Skip("dnsmasq is not installed")
+	}
+	v := newEnv(t)
+	sh(t, `
+ip netns add peer
+ip link add veth0 type veth peer name veth1
+ip link set veth1 netns peer
+ip link set veth1 address 02:aa:bb:cc:00:07 2>/dev/null || ip netns exec peer ip link set veth1 address 02:aa:bb:cc:00:07
+ip addr add 10.55.0.1/24 dev veth0
+ip link set veth0 up
+ip netns exec peer ip link set lo up
+ip netns exec peer ip link set veth1 up
+cat > /tmp/dhscript.sh <<'EOS'
+#!/bin/sh
+case "$reason" in
+  BOUND|RENEW|REBIND|REBOOT)
+    echo "$new_ip_address|$new_routers|$new_domain_name_servers|$new_domain_name" > /tmp/dh.out
+    ip addr add "$new_ip_address/24" dev "$interface" 2>/dev/null ;;
+esac
+exit 0
+EOS
+chmod +x /tmp/dhscript.sh`)
+	t.Cleanup(func() { try("ip netns del peer; pkill -x dhclient; rm -f /tmp/dh.out /tmp/dhscript.sh") })
+
+	v.update(t, func(c *model.Config) {
+		c.Firewall.Policy.Input = "drop"
+		c.Firewall.Rules = []model.FWRule{{ID: "est", Chain: "input", Action: "accept", ConnState: "established,related"}}
+		c.DNSMasq = model.DNSMasq{Enabled: true, DNS: true, Domain: "lan", Upstreams: []string{"192.0.2.53"}}
+		c.DHCPScopes = []model.DHCPScope{{ID: "s1", Interface: "veth0", Start: "10.55.0.100", End: "10.55.0.150", LeaseTime: "2m"}}
+		c.DHCPHosts = []model.DHCPHost{{ID: "h1", MAC: "02:aa:bb:cc:00:07", IP: "10.55.0.120", Hostname: "peer1"}}
+		c.DNSRecords = []model.DNSRecord{{ID: "r1", Name: "router.lan", Address: "10.55.0.1"}, {ID: "r2", Name: "gw.lan", Address: "router.lan"}}
+	})
+	waitFor(t, 15*time.Second, "dnsmasq to run", func() bool {
+		st, ok := v.eng.ServiceStatus("dnsmasq")
+		return ok && st.Running
+	})
+	waitFor(t, 10*time.Second, "dnsmasq to listen for DHCP", func() bool {
+		out, _ := try("ss -lunH sport = :67")
+		return strings.TrimSpace(out) != ""
+	})
+
+	// DHCP from the device, through the generated firewall rule.
+	if out, err := try("ip netns exec peer dhclient -1 -v -sf /tmp/dhscript.sh -pf /tmp/dh.pid -lf /tmp/dh.leases veth1"); err != nil {
+		st, _ := v.eng.ServiceStatus("dnsmasq")
+		t.Fatalf("dhclient failed: %v\n%s\ndnsmasq log:\n%s", err, out, strings.Join(st.Log, "\n"))
+	}
+	got := strings.TrimSpace(sh(t, "cat /tmp/dh.out"))
+	if got != "10.55.0.120|10.55.0.1|10.55.0.1|lan" {
+		t.Errorf("lease = %q, want its fixed address, gateway and DNS server 10.55.0.1 and domain lan", got)
+	}
+
+	// DNS from the device: a record, and an alias that follows it.
+	dig := func(name string) string {
+		out, _ := try("ip netns exec peer dig +short +time=2 +tries=1 @10.55.0.1 " + name)
+		return strings.TrimSpace(out)
+	}
+	if got := dig("router.lan"); got != "10.55.0.1" {
+		t.Errorf("router.lan = %q", got)
+	}
+	if got := dig("gw.lan"); !strings.Contains(got, "router.lan") || !strings.Contains(got, "10.55.0.1") {
+		t.Errorf("gw.lan = %q, want a CNAME to router.lan and its address", got)
+	}
+	if got := dig("peer1.lan"); got != "10.55.0.120" {
+		t.Errorf("a fixed address's name = %q", got)
+	}
+
+	// The lease shows up where the panel reads it.
+	waitFor(t, 5*time.Second, "the lease file", func() bool {
+		ls, _ := dnsmasq.Leases(dnsmasq.LeasePath(v.eng.ServicesDir()))
+		return len(ls) == 1 && ls[0].MAC == "02:aa:bb:cc:00:07" && ls[0].IP == "10.55.0.120" && ls[0].Hostname == "peer1"
+	})
+
+	// A change restarts it with the new config.
+	before, _ := v.eng.ServiceStatus("dnsmasq")
+	v.update(t, func(c *model.Config) {
+		c.DNSRecords = append(c.DNSRecords, model.DNSRecord{ID: "r3", Name: "new.lan", Address: "10.55.0.77"})
+	})
+	waitFor(t, 15*time.Second, "the restart", func() bool {
+		st, ok := v.eng.ServiceStatus("dnsmasq")
+		return ok && st.Running && st.Since.After(before.Since) && dig("new.lan") == "10.55.0.77"
+	})
+	if dig("router.lan") != "10.55.0.1" {
+		t.Error("an old record was lost in the restart")
+	}
+
+	// An invalid setting is refused before it can reach dnsmasq.
+	if _, err := v.eng.Update(func(c *model.Config) error { c.DNSMasq.CacheSize = 20000; return nil }); err == nil {
+		t.Error("an invalid cache size was accepted")
+	}
+
+	// Switching off stops the program and removes the firewall rules.
+	v.update(t, func(c *model.Config) { c.DNSMasq.Enabled = false })
+	waitFor(t, 10*time.Second, "dnsmasq to stop", func() bool {
+		_, running := v.eng.ServiceStatus("dnsmasq")
+		out, _ := try("pgrep -x dnsmasq")
+		return !running && strings.TrimSpace(out) == ""
+	})
+	if out := sh(t, "nft list chain inet mini-net-man input"); strings.Contains(out, "dport 67") {
+		t.Errorf("the DHCP rule is still there:\n%s", out)
+	}
+}
+
+// TestHostapdConfigParses feeds the generated hostapd configs to the real
+// hostapd. There is no Wi-Fi hardware here, so it stops at the driver, but only
+// after reading the whole file: a setting hostapd doesn't understand is
+// reported before that.
+func TestHostapdConfigParses(t *testing.T) {
+	bin, err := exec.LookPath("hostapd")
+	if err != nil {
+		t.Skip("hostapd is not installed")
+	}
+	dir := t.TempDir()
+	for name, ap := range map[string]model.AccessPoint{
+		"2.4 GHz WPA2": {Interface: "wlan0", SSID: "Home", Band: "2.4", Channel: 6, Security: "wpa2", Passphrase: "correct horse battery", N: true, Country: "DE"},
+		"5 GHz mixed":  {Interface: "wlan0", SSID: "Fast Net", Band: "5", Channel: 36, Country: "DE", Security: "wpa2+wpa3", Passphrase: "correct horse battery", N: true, AC: true, Isolate: true, MaxClients: 10, Hidden: true},
+		"WPA3 only":    {Interface: "wlan0", SSID: "Strict", Band: "5", Channel: 149, Country: "US", Security: "wpa3", Passphrase: "correct horse battery", N: true, AC: true, AX: true},
+		"open":         {Interface: "wlan0", SSID: "Guests", Band: "2.4", Channel: 1, Security: "open", Bridge: "br0"},
+		"raw key":      {Interface: "wlan0", SSID: "Key", Band: "2.4", Channel: 11, Security: "wpa2", Passphrase: strings.Repeat("0a", 32)},
+	} {
+		conf := filepath.Join(dir, "h.conf")
+		if err := os.WriteFile(conf, []byte(hostapd.Render(ap, dir)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, _ := try(bin + " -t " + conf + " 2>&1 | head -40")
+		for _, bad := range []string{"unknown configuration item", "Line ", "invalid", "Invalid", "failed to parse"} {
+			if strings.Contains(out, bad) {
+				t.Errorf("%s: hostapd rejects the generated config (%q):\n%s", name, bad, out)
+			}
+		}
 	}
 }
