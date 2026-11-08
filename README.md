@@ -1,6 +1,6 @@
 # mini-net-man
 
-A small web-managed Linux networking tool in the style of MikroTik RouterOS. One Go binary, one YAML file, one systemd unit.
+A small web-managed Linux networking tool in the style of MikroTik RouterOS. One Go binary, one YAML file, one service (systemd or OpenRC).
 
 - **Interfaces & addresses**: see interfaces, add extra IPs.
 - **Routes** and **policy rules**: `ip route … table N` and `ip rule … priority N`, created by hand.
@@ -36,7 +36,16 @@ sudo ./mini-net-man install
 
 Each release also has a `checksums.txt` to verify the download against (`sha256sum -c`). To build from source instead, run `make linux` and copy `bin/mini-net-man-linux-*` over.
 
-`install` creates `config.yaml` **next to the binary** (unless you pass `-config`), writes and starts a systemd service that runs the binary in place, and prints the login. Re-run it after replacing the binary to restart on the new one. `uninstall` removes the service and keeps your config.
+`install` creates `config.yaml` **next to the binary** (unless you pass `-config`), writes and starts a service that runs the binary in place (a systemd unit, or an OpenRC init script on Alpine and Gentoo, chosen by what the machine runs), and prints the login. Re-run it after replacing the binary to restart on the new one. `uninstall` removes the service and keeps your config.
+
+On **Alpine** (or any OpenRC machine) install what the panel drives, then run the same commands:
+
+```sh
+apk add iproute2 nftables        # nftables is only needed for the ruleset preview; add dnsmasq / hostapd if you use those pages
+sudo ./mini-net-man install
+```
+
+`install` writes `/etc/init.d/mini-net-man` (supervised, so it restarts if it dies, with output in `/var/log/mini-net-man.log`), adds it to the `default` runlevel and starts it. `update` and the panel's update button restart it with `rc-service mini-net-man restart`. WireGuard and nftables need their kernel modules, which the stock `linux-lts` kernel has (add `wireguard` to `/etc/modules`).
 
 By default only the server itself may open the panel, so reach it through an SSH tunnel (`ssh -L 8080:127.0.0.1:8080 server`, then browse to `http://127.0.0.1:8080`). To open it to your own address instead:
 

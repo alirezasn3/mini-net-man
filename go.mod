@@ -14,6 +14,7 @@ require (
 )
 
 require (
+	github.com/alirezasn3/go-openrc v1.0.0 // indirect
 	github.com/alirezasn3/go-permissions v1.0.0 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect

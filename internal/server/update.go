@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/alirezasn3/mini-net-man/internal/initsys"
 	"github.com/alirezasn3/mini-net-man/internal/update"
 )
 
@@ -121,12 +122,13 @@ func (s *Server) updateInstall(w http.ResponseWriter, r *http.Request) {
 	s.upCache = nil
 	s.pending = rel.Tag
 
-	restarting := update.UnderSystemd()
+	init := initsys.Detect()
+	restarting := init.Supervised()
 	writeJSON(w, map[string]any{"version": rel.Tag, "restarting": restarting})
 	if restarting {
 		go func() {
 			time.Sleep(700 * time.Millisecond) // let the response reach the browser
-			if err := update.RestartService(serviceName, true); err != nil {
+			if err := init.Restart(serviceName, true); err != nil {
 				s.log.Error("restart after update failed", "err", err)
 			}
 		}()

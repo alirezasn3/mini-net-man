@@ -18,9 +18,9 @@ import (
 	"syscall"
 	"time"
 
-	goSystemd "github.com/alirezasn3/go-systemd"
 	"github.com/alirezasn3/mini-net-man/internal/dnslist"
 	"github.com/alirezasn3/mini-net-man/internal/engine"
+	"github.com/alirezasn3/mini-net-man/internal/initsys"
 	"github.com/alirezasn3/mini-net-man/internal/kernel"
 	"github.com/alirezasn3/mini-net-man/internal/model"
 	"github.com/alirezasn3/mini-net-man/internal/server"
@@ -39,9 +39,9 @@ const usage = `usage: mini-net-man [command] [flags]
 
 commands:
   run         start the daemon and web panel (default)
-  install     set everything up and start it as a systemd service
+  install     set everything up and start it as a service (systemd or OpenRC)
   update      install the latest release from GitHub (-check to only look)
-  uninstall   stop and remove the systemd service (keeps your config)
+  uninstall   stop and remove the service (keeps your config)
   passwd USER set (or create) a panel user's password
   version     print the version
 
@@ -81,7 +81,7 @@ func main() {
 	case "update":
 		err = updateCmd(args)
 	case "uninstall":
-		err = goSystemd.DeleteService(serviceName)
+		err = initsys.Detect().Delete(serviceName)
 	case "passwd":
 		err = passwd(args)
 	case "version":
@@ -269,17 +269,17 @@ func install(args []string) error {
 	}
 
 	// Replace a running copy so the new binary takes over.
-	if st, err := goSystemd.StatusService(serviceName); err == nil && st != nil && st.Exists {
-		_ = goSystemd.StopService(serviceName)
+	init := initsys.Detect()
+	if init == initsys.None {
+		return initsys.ErrNone
 	}
-	if err := goSystemd.CreateService(&goSystemd.Service{
+	if st, err := init.Status(serviceName); err == nil && st.Exists {
+		_ = init.Stop(serviceName)
+	}
+	if err := init.Create(initsys.Spec{
 		Name:        serviceName,
 		Description: "mini-net-man network manager",
 		ExecStart:   fmt.Sprintf("%s run -config %s", exe, cfgPath),
-		Restart:     "on-failure",
-		RestartSec:  "3s",
-		After:       "network-online.target",
-		Wants:       "network-online.target",
 	}); err != nil {
 		return err
 	}
@@ -289,9 +289,9 @@ func install(args []string) error {
 	} else {
 		fmt.Printf("\nUsing existing config %s\n  panel:    %s\n  allowed:  %s\n\n", cfgPath, listenText(cfg), strings.Join(cfg.Web.AllowedIPs, ", "))
 	}
-	fmt.Printf("Installed and started the %s service, running %s\n", serviceName, exe)
+	fmt.Printf("Installed and started the %s service (%s), running %s\n", serviceName, init, exe)
 	fmt.Println("Keep the binary where it is (the service runs it in place); if you move it, run install again.")
-	fmt.Printf("Logs: journalctl -u %s -f     Remove: %s uninstall\n", serviceName, exe)
+	fmt.Printf("Logs: %s     Remove: %s uninstall\n", init.LogsHint(serviceName), exe)
 	return nil
 }
 
@@ -403,18 +403,19 @@ func updateCmd(args []string) error {
 
 // restartAfter restarts the service on the new binary, if there is one.
 func restartAfter(skip bool) error {
-	st, err := goSystemd.StatusService(serviceName)
-	if err != nil || st == nil || !st.Exists || !st.Active {
+	init := initsys.Detect()
+	st, err := init.Status(serviceName)
+	if err != nil || !st.Exists || !st.Active {
 		fmt.Println("The service is not running; start it with `sudo ./mini-net-man install`, or run the new binary yourself.")
 		return nil
 	}
 	if skip {
-		fmt.Println("Restart it to use the new version: sudo systemctl restart " + serviceName)
+		fmt.Println("Restart it to use the new version: sudo " + init.RestartCmd(serviceName))
 		return nil
 	}
-	if err := update.RestartService(serviceName, false); err != nil {
+	if err := init.Restart(serviceName, false); err != nil {
 		fmt.Println("Could not restart the service automatically:", err)
-		fmt.Println("Restart it yourself: sudo systemctl restart " + serviceName)
+		fmt.Println("Restart it yourself: sudo " + init.RestartCmd(serviceName))
 		return nil
 	}
 	fmt.Println("Restarted the service.")
@@ -465,7 +466,7 @@ func passwd(args []string) error {
 	if err := engine.SaveConfig(f.config, cfg); err != nil {
 		return err
 	}
-	fmt.Println("saved; restart the service for it to take effect: systemctl restart", serviceName)
+	fmt.Println("saved; restart the service for it to take effect:", initsys.Detect().RestartCmd(serviceName))
 	return nil
 }
 

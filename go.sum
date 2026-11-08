@@ -1,3 +1,5 @@
+github.com/alirezasn3/go-openrc v1.0.0 h1:QC1fx8M9FXK24mr5YH+nJl/KSBCb4SpkLxr3rkQx5EU=
+github.com/alirezasn3/go-openrc v1.0.0/go.mod h1:AvKiSrZQ5xG6WLeLIlq+shEQJkjISNF9BQ4PdBXjDGE=
 github.com/alirezasn3/go-permissions v1.0.0 h1:9TU0LKJqESdmBiQIydKwgD7O0ns6Wj2O611sGHhJLb0=
 github.com/alirezasn3/go-permissions v1.0.0/go.mod h1:3yn6OdNSK9nx1lOdxOhmbYdGed8O9t1a8ZLHXtcceAI=
 github.com/alirezasn3/go-systemd v1.3.0 h1:OrpprH5IqECWXkUt1EAX36zXaTPPq8fQoqd6e/J1yoY=

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	goOpenRC "github.com/alirezasn3/go-openrc"
 	goSystemd "github.com/alirezasn3/go-systemd"
 )
 
@@ -56,6 +57,12 @@ func Run() Report {
 	}
 	if st, err := goSystemd.StatusService("netfilter-persistent"); err == nil && st != nil {
 		r.PersistentActive = st.Exists && (st.Active || st.Enabled)
+	}
+	// On OpenRC (Alpine) the iptables and ip6tables services restore saved rules at boot.
+	for _, n := range []string{"iptables", "ip6tables"} {
+		if st, err := goOpenRC.StatusService(n); err == nil && st != nil && st.Exists && (st.Active || st.Enabled) {
+			r.PersistentActive = true
+		}
 	}
 	if has("iptables") {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
