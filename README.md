@@ -1,13 +1,11 @@
 # mini-net-man
 
-A small web-managed Linux networking tool in the style of MikroTik RouterOS. One Go binary, one YAML file, one service (systemd or OpenRC).
+A small web-managed Linux networking tool in the style of MikroTik RouterOS. One Go binary, one YAML file, one systemd unit.
 
 - **Interfaces & addresses**: see interfaces, add extra IPs.
 - **Routes** and **policy rules**: `ip route … table N` and `ip rule … priority N`, created by hand.
 - **Interfaces and bridges**: bring interfaces up or down, set their MTU, build bridges and choose their ports, all kept in place by the reconcile loop. The page also says what else manages the network (NetworkManager, systemd-networkd, netplan, ifupdown, ...) and which interfaces each one claims.
 - **Address lists**: named lists of IPs, networks and ranges, like MikroTik's address lists. Firewall rules match a list (or "not in" it) and can add the source or destination of matching traffic to a list for a while: blocklists, whitelists, and "block anyone who keeps trying SSH".
-- **DHCP and DNS** (dnsmasq): DHCP scopes with fixed addresses, a DNS server with local records and aliases, a live lease list, and the firewall rules to reach it generated for you.
-- **Wi-Fi access points** (hostapd): turn a Wi-Fi card into an access point (WPA2/WPA3, 2.4 or 5 GHz, optional bridge and client isolation) and see and disconnect connected devices.
 - **Sorting**: click a column heading on any list (routes, policy rules, firewall rules, …) to sort it ascending, again for descending, a third time to go back. It only changes the view, is remembered in your browser, and never changes the order rules are applied in; moving firewall rules is off while a sort is active.
 - **HTTP API**: everything the panel does is a JSON API that other programs can call with an API token (made in Settings, optionally read-only).
 - **Firewall + NAT**: a dedicated dual-stack nftables table (`inet mini-net-man`), replaced atomically. Interface fields take a trailing `*` as a wildcard (`wg*` matches `wg0` and `wgBridge1`). Each chain's default action (accept, drop or reject) is the last row of the rule list and editable there.
@@ -18,7 +16,7 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 - **Ports**: which program is listening on which port (like `ss -tulnp`), and whether it is reachable from every interface or only this machine.
 - **Connections**: the kernel's connection-tracking table: every connection, including your VPN clients' traffic passing through. Each is labelled with its client, the exit interface and the NAT applied, and optionally bytes up and down. Filter by client, state or protocol.
 - **Tuning**: a curated set of kernel settings for a VPN gateway or router: BBR congestion control, queue discipline, socket buffers, MTU probing, connection-tracking size and timeouts, reverse-path filtering, ICMP redirects. Each has an explanation and a recommended value.
-- **Import**: adopts existing `ip rule`/`ip route`, `iptables-save`, ufw rules and the iptables rules your distribution restores at boot (iptables-persistent on Debian and Ubuntu, the `iptables` and `ip6tables` services on Alpine, iptables-services on Red Hat), and lists the ones it can't convert with the reason for each (a module with no equivalent, a jump to another chain, a negated match, ufw rate limiting, ...).
+- **Import**: adopts existing `ip rule`/`ip route`, `iptables-save`, ufw and iptables-persistent rules, and lists the ones it can't convert with the reason for each (a module with no equivalent, a jump to another chain, a negated match, ufw rate limiting, ...).
 - **Safe mode**: changes revert automatically unless you confirm, or if the browser disconnects.
 
 IPv4 and IPv6 are both supported. Linux only for the real backend (`-mock` runs anywhere).
@@ -36,18 +34,7 @@ sudo ./mini-net-man install
 
 Each release also has a `checksums.txt` to verify the download against (`sha256sum -c`). To build from source instead, run `make linux` and copy `bin/mini-net-man-linux-*` over.
 
-`install` creates `config.yaml` **next to the binary** (unless you pass `-config`), writes and starts a service that runs the binary in place (a systemd unit, or an OpenRC init script on Alpine and Gentoo, chosen by what the machine runs), and prints the login. Re-run it after replacing the binary to restart on the new one. `uninstall` removes the service and keeps your config.
-
-On **Alpine** (or any OpenRC machine) install what the panel drives, then run the same commands:
-
-```sh
-apk add iproute2 nftables        # nftables is only needed for the ruleset preview; add dnsmasq / hostapd if you use those pages
-sudo ./mini-net-man install
-```
-
-`install` writes `/etc/init.d/mini-net-man` (supervised, so it restarts if it dies, with output in `/var/log/mini-net-man.log`), adds it to the `default` runlevel and starts it. `update` and the panel's update button restart it with `rc-service mini-net-man restart`. WireGuard and nftables need their kernel modules, which the stock `linux-lts` kernel has (add `wireguard` to `/etc/modules`).
-
-The panel behaves the same on Alpine and Ubuntu. The Overview page names the distribution and init system, lists the programs it uses with the command that installs each missing one for your package manager (`apk add`, `apt install`, `dnf install`, `pacman -S`), and warns about anything that would fight with it: ufw, firewalld, awall, saved iptables rules, an `nftables` service whose ruleset begins with `flush ruleset`, the system `dnsmasq` or `hostapd` service when you use those pages (with the command that turns it off: `systemctl disable --now` or `rc-service ... stop; rc-update del ...`), and NetworkManager, systemd-networkd, ifupdown, dhcpcd, ConnMan, iwd or wpa_supplicant claiming an interface.
+`install` creates `config.yaml` **next to the binary** (unless you pass `-config`), writes and starts a systemd service that runs the binary in place, and prints the login. Re-run it after replacing the binary to restart on the new one. `uninstall` removes the service and keeps your config.
 
 By default only the server itself may open the panel, so reach it through an SSH tunnel (`ssh -L 8080:127.0.0.1:8080 server`, then browse to `http://127.0.0.1:8080`). To open it to your own address instead:
 
@@ -155,46 +142,6 @@ What to know:
 - A rule that names a list nobody has filled just matches nothing (`!list` matches everything).
 - Under the hood each list is four nftables sets (`<name>.s4`, `.s6` for your entries; `.d4`, `.d6` for what rules add). Because one comparison can't ask "in this set or that", a rule that matches a list is written once per set and family: a positive match on a list can be up to four rules in `nft list ruleset`, all with the same action. A dynamic set holds at most 131072 addresses; when it is full, new ones are not added.
 - List names start with a letter and have at most 24 characters (letters, digits, `_`, `-`, `.`).
-
-## Sending this server's own traffic through a tunnel
-
-To make the server itself reach some destinations (an address list, including domain names) through a tunnel, while its other traffic keeps using the normal uplink:
-
-1. **Address list**: put the destinations in a list, say `vpn` (IPs, networks, or names like `api.telegram.org`).
-2. **Firewall, `mangle-out`**: action `mark-connection`, *Mark* `69`, *Destination in address list* `vpn`. Traffic this server creates is marked, and the kernel looks the route up again with the mark.
-3. **Policy rule**: *Firewall mark* `69`, action `lookup`, table `200`. **Routes**: in table `200`, `default` via the tunnel interface. With several tunnels, repeat with rules at increasing priorities and a health check on each: the first healthy one wins.
-4. **Firewall, `srcnat`**: action `masquerade`, *Out interface* the tunnel (`wgBridge*`), and a source that is **only the server's own traffic**. Without this the packets leave through the tunnel still carrying the uplink's address as their source, which the far end's WireGuard `AllowedIPs` drops, and any reply would not come back that way. If this server also forwards clients whose addresses must stay visible (see "Replying on the interface a request came in on"), do not masquerade them: put your clients' network in an address list (`clients`) and use *Source in address list* `!clients`, so only the server's own address is rewritten. Keep that list filled, because `!` on an empty list matches everything.
-5. **Tuning**: set `rp_filter` to loose (2) or off, because the replies come back on the tunnel while the main table points at the uplink.
-
-Things to know:
-
-- **IPv6 is separate.** Policy rules and routes without an address are IPv4, so a marked IPv6 packet finds no table and goes out the uplink, unproxied. Applications that prefer IPv6 (a name with an AAAA record) then bypass the tunnel. Either route IPv6 too (a rule with *Family* IPv6, a `::/0` route in the table, IPv6 on the tunnel and a masquerade for it), or make marked IPv6 fail at once so applications fall back to IPv4: a policy rule with *Family* IPv6, *Firewall mark* `69`, action `unreachable`.
-- **No tunnel up means no tunnel.** If every health check is failing, the marked packets fall through to the normal route and go out the uplink. To stop that instead, add a last policy rule: *Firewall mark* `69`, action `unreachable` (at a priority after the tunnels'), so the destinations fail instead of leaking.
-- **Connections already open** when an address joins the list, and a name's address that changes while a connection is open, stay on their old path until they reconnect. Names are only as good as the addresses this machine's DNS returns.
-- Check with `ip route get <address> mark 69`, and with `tcpdump -ni <tunnel> host <address>`: the source address you see should be the tunnel's own.
-
-## DHCP and DNS (dnsmasq)
-
-The **DHCP & DNS** page runs [dnsmasq](https://thekelleys.org.uk/dnsmasq/doc.html) for the devices on your interfaces. Install the program (`apt install dnsmasq-base` on Debian and Ubuntu, `apk add dnsmasq` on Alpine, `dnf install dnsmasq` on Fedora; the panel prints the right command for its machine; the system service isn't needed and can stay off). mini-net-man starts **its own copy** as a child process with a config it writes itself under `services/` next to `config.yaml`, so it never edits `/etc/dnsmasq.conf` or `/etc/dnsmasq.d`, and stops it when it stops.
-
-- **Scopes**: one per interface. A first and last address, a lease time (`30m`, `12h`, `2d`, `infinite`; at least 2 minutes), and optionally the gateway and DNS servers handed to devices. Left empty, the gateway is this machine's address on the interface and the DNS server is this machine (when DNS is on). The interface needs an address of its own in the same network (add one on the Interfaces page).
-- **Fixed addresses**: a MAC address always gets one address (and an optional name that also becomes a DNS name). *Make fixed* on a lease in the list creates one from it.
-- **DNS**: answers questions on the scopes' interfaces and any others you add, forwarding to the upstream servers you choose (or `/etc/resolv.conf`). **DNS records** answer a name locally: an IP address (IPv4 or IPv6), or another name to make an alias. A name covers exactly that name. The **local domain** makes bare names (`nas`) answer from your records and fixed addresses and is handed to devices as their search domain.
-- **Leases**: the live list, read from dnsmasq's lease file, which survives restarts.
-- **Firewall**: with an `input` policy of drop, devices couldn't reach it. mini-net-man adds accept rules for DHCP (UDP 67) and DNS (UDP and TCP 53) on exactly the interfaces it serves, ahead of yours, shown as *generated* on the Firewall page and gone when you switch it off.
-- **Problems are shown on the page**: a missing program, another program already using port 53 or 67 (it names it), a config dnsmasq rejects (the working one keeps running), and dnsmasq's own log. *Generated config* shows exactly what it was started with.
-- A change restarts dnsmasq (a second or less), and so does restarting or updating mini-net-man; devices keep their leases through it. DHCP for IPv4 only: no DHCPv6 or router advertisements.
-
-## Wi-Fi access points (hostapd)
-
-The **Wi-Fi** page turns a wireless interface into an access point with [hostapd](https://w1.fi/hostapd/) (`apt install hostapd`, `apk add hostapd`, `dnf install hostapd`; leave its system service off). One hostapd per access point runs as a child process with a config mini-net-man writes under `services/` (mode 0600, since it holds the password), restarted if it dies and stopped with mini-net-man.
-
-- **Settings**: network name, security (WPA2 + WPA3, WPA2, WPA3, or open), password, band (2.4 or 5 GHz), channel (0 asks the driver to choose, if it can), country code (required for 5 GHz: it decides the allowed channels and power), 802.11n/ac/ax, hidden network, client isolation, most devices.
-- **Passwords are never shown again.** The panel and API return `has_passphrase`, never the password, and the generated-config view hides it; leave the field empty when editing to keep it. A WPA3 password must be 8 to 63 characters; WPA2 also takes a 64-digit key.
-- **Bridge**: set the access point's *Bridge* so hostapd adds it to that bridge and its devices share the bridge's network and DHCP. Don't also list the Wi-Fi interface as a bridge port (the panel refuses it): hostapd does the joining. Without a bridge, give the interface an address and a DHCP scope.
-- **Live view**: connected devices with signal strength, time connected and traffic (read from hostapd's control socket), and *Disconnect* (it may reconnect at once; this is not a ban).
-- **Requirements**: a card and driver that support access point mode (`iw list` shows "AP" under supported interface modes), no rfkill block, and nothing else controlling the interface. If NetworkManager or systemd-networkd also manages it, the page warns and says how to hand it over (`nmcli device set wlan0 managed no`). The log on the page shows why hostapd stopped.
-- Not covered: WPA-Enterprise (RADIUS), 6 GHz, multiple SSIDs on one card, and DFS channel selection beyond what the driver does.
 
 ## MSS clamping
 

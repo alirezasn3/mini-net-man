@@ -7,8 +7,6 @@
   import Rules from './pages/Rules.svelte'
   import Firewall from './pages/Firewall.svelte'
   import AddressLists from './pages/AddressLists.svelte'
-  import DhcpDns from './pages/DhcpDns.svelte'
-  import WiFi from './pages/WiFi.svelte'
   import Ports from './pages/Ports.svelte'
   import Connections from './pages/Connections.svelte'
   import Tuning from './pages/Tuning.svelte'
@@ -23,8 +21,6 @@
     { path: 'rules', label: 'Policy rules', comp: Rules },
     { path: 'firewall', label: 'Firewall', comp: Firewall },
     { path: 'address-lists', label: 'Address lists', comp: AddressLists },
-    { path: 'dhcp-dns', label: 'DHCP & DNS', comp: DhcpDns },
-    { path: 'wifi', label: 'Wi-Fi', comp: WiFi },
     { path: 'ports', label: 'Ports', comp: Ports },
     { path: 'connections', label: 'Connections', comp: Connections },
     { path: 'tuning', label: 'Tuning', comp: Tuning },
