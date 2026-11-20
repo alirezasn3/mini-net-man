@@ -340,59 +340,6 @@ func TestTuning(t *testing.T) {
 	}
 }
 
-// ---- client routing, link flaps, kill switch -------------------------------
-
-func TestClientRoutingFlap(t *testing.T) {
-	v := newEnv(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go v.eng.Run(ctx)
-	time.Sleep(300 * time.Millisecond) // let the netlink subscriptions start
-
-	v.update(t, func(c *model.Config) {
-		on := true
-		c.Sysctl.IPForward, c.Sysctl.IPv6Forward = &on, &on
-		c.ClientRouting.Enabled = true
-		c.ClientRouting.Clients = []model.ClientRoute{
-			{ID: "c4", Name: "v4", Src: "10.0.0.5", In: "wgServer", Out: "wgBridge0", KillSwitch: true},
-			{ID: "c6", Name: "v6", Src: "fd00:10::5", In: "wgServer", Out: "wgBridge0", KillSwitch: true},
-			{ID: "n4", Name: "no-kill", Src: "10.0.0.6", In: "wgServer", Out: "wgBridge1"},
-		}
-	})
-	contains(t, "table 200", sh(t, "ip route show table 200"), "default dev wgBridge0", "10.0.0.0/16 dev wgServer")
-	contains(t, "table 200 v6", sh(t, "ip -6 route show table 200"), "default dev wgBridge0", "fd00:10::/64 dev wgServer")
-	contains(t, "rules", sh(t, "ip rule show"), "from 10.0.0.5 lookup 200", "from 10.0.0.5 blackhole", "from 10.0.0.6 lookup 201")
-	absent(t, "rules", sh(t, "ip rule show"), "from 10.0.0.6 blackhole")
-	nft := sh(t, "nft list table inet mini-net-man")
-	contains(t, "nft", nft, `oifname "wgBridge0" masquerade`, `iifname "wgServer" oifname "wgBridge0" accept`, "ct state established,related accept")
-	contains(t, "route get", sh(t, "ip route get 8.8.8.8 from 10.0.0.5 iif wgServer"), "dev wgBridge0")
-	contains(t, "route get v6", sh(t, "ip -6 route get 2001:db8::1 from fd00:10::5 iif wgServer"), "dev wgBridge0")
-
-	// Exit goes down: routes vanish, the kill switch drops the client, the
-	// client without a kill switch falls back to the main table.
-	sh(t, "ip link set wgBridge0 down")
-	waitFor(t, 5*time.Second, "exit route to disappear", func() bool {
-		return !strings.Contains(sh(t, "ip route show table 200"), "default dev wgBridge0")
-	})
-	if out, err := try("ip route get 8.8.8.8 from 10.0.0.5 iif wgServer"); err == nil && !strings.Contains(out, "blackhole") {
-		t.Errorf("kill switch failed, traffic would leak: %s", out)
-	}
-
-	// Exit returns: the engine re-adds the routes on its own.
-	sh(t, "ip link set wgBridge0 up")
-	waitFor(t, 10*time.Second, "exit route to come back", func() bool {
-		return strings.Contains(sh(t, "ip route show table 200"), "default dev wgBridge0") &&
-			strings.Contains(sh(t, "ip -6 route show table 200"), "default dev wgBridge0")
-	})
-	contains(t, "route get after flap", sh(t, "ip route get 8.8.8.8 from 10.0.0.5 iif wgServer"), "dev wgBridge0")
-
-	// Turning the feature off leaves nothing behind.
-	v.update(t, func(c *model.Config) { c.ClientRouting.Enabled = false })
-	absent(t, "rules", sh(t, "ip rule show"), "lookup 200", "lookup 201", "blackhole")
-	absent(t, "table 200", sh(t, "ip route show table 200"), "wgBridge0")
-	absent(t, "nft", sh(t, "nft list table inet mini-net-man"), "masquerade")
-}
-
 func TestWatch(t *testing.T) {
 	topology(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1011,7 +958,6 @@ sleep 1`)
 	on := true
 	v.update(t, func(c *model.Config) {
 		c.Sysctl.IPForward, c.Sysctl.ConntrackAcct = &on, &on
-		c.ClientRouting.Clients = []model.ClientRoute{{ID: "x", Name: "pa-client", Src: "10.55.0.2", In: "va0", Out: "vb0"}}
 		c.Firewall.Rules = []model.FWRule{
 			{ID: "m", Chain: "srcnat", Action: "masquerade", OutIface: "vb0"},
 			{ID: "d", Chain: "dstnat", Action: "dnat", Proto: "tcp", DstPort: "9100", ToAddr: "10.66.0.2", ToPort: 9000},
@@ -1031,7 +977,7 @@ sleep 1`)
 		t.Fatalf("conntrack info: %+v", info)
 	}
 	addrs, _ := v.k.ListAddrs()
-	ctx := conns.NewContext(addrs, v.eng.Config().ClientRouting.Clients)
+	ctx := conns.NewContext(addrs)
 	for i := range all {
 		ctx.Enrich(&all[i])
 	}
@@ -1047,8 +993,8 @@ sleep 1`)
 	}
 
 	fw := find("10.66.0.2", 9000)
-	if fw.Kind != "forwarded" || fw.Client != "pa-client" {
-		t.Errorf("kind=%q client=%q", fw.Kind, fw.Client)
+	if fw.Kind != "forwarded" {
+		t.Errorf("kind=%q", fw.Kind)
 	}
 	if fw.ReplyDst != "10.66.0.1" || fw.NAT != "SNAT 10.66.0.1" || fw.Via != "vb0" {
 		t.Errorf("masquerade: reply_dst=%s nat=%q via=%q (the translated address belongs to vb0)", fw.ReplyDst, fw.NAT, fw.Via)
@@ -1065,9 +1011,9 @@ sleep 1`)
 		t.Errorf("port forward NAT = %q", pf.NAT)
 	}
 
-	// And the query layer sees exactly these as this client's forwarded traffic.
+	// And the query layer sees exactly these as this source's forwarded traffic.
 	sum, rows := conns.Run(all, conns.Query{Kind: "forwarded", Client: "10.55.0.2"})
-	if len(rows) < 2 || sum.Clients[0].Name != "pa-client" || len(sum.Exits) == 0 || sum.Exits[0].Via != "vb0" {
+	if len(rows) < 2 || sum.Clients[0].Key != "10.55.0.2" || len(sum.Exits) == 0 || sum.Exits[0].Via != "vb0" {
 		t.Errorf("summary: %+v rows=%d", sum, len(rows))
 	}
 }

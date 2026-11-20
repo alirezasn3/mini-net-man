@@ -6,8 +6,8 @@ Everything the web panel does goes through this JSON API, so any program can do 
 - [Authentication](#authentication)
 - [Conventions](#conventions)
 - [Safe mode from a script](#safe-mode-from-a-script)
-- [Items you manage](#items-you-manage): addresses, address lists, routes, policy rules, firewall rules, bridges, interface settings, health checks, client routing
-- [Other settings](#other-settings): firewall policy, client routing switch, kernel settings, reapply
+- [Items you manage](#items-you-manage): addresses, address lists, routes, policy rules, firewall rules, bridges, interface settings, health checks
+- [Other settings](#other-settings): firewall policy, kernel settings, reapply
 - [Looking at the machine](#looking-at-the-machine)
 - [Panel, accounts and updates](#panel-accounts-and-updates)
 - [Examples](#examples)
@@ -66,7 +66,7 @@ The panel itself uses a cookie session from `POST /api/login` (`{"username": "..
 
 `kind` is one of `address`, `route`, `rule`, `firewall`, `sysctl`, `bridge`, `interface`. Items that couldn't be applied are retried automatically with a growing delay, and again whenever the kernel's interfaces, addresses or routes change. The current list is also in `GET /api/overview` under `issues`.
 
-**Lists.** Items you manage all share the same calls (`<list>` is `routes`, `rules`, `addresses`, `address-lists`, `bridges`, `interfaces`, `checks`, `firewall/rules` or `client-routing/clients`):
+**Lists.** Items you manage all share the same calls (`<list>` is `routes`, `rules`, `addresses`, `address-lists`, `bridges`, `interfaces`, `checks`, or `firewall/rules`):
 
 | Call | What it does |
 |---|---|
@@ -79,7 +79,7 @@ The panel itself uses a cookie session from `POST /api/login` (`{"username": "..
 
 To change one field, `GET` the item, change it and `PUT` it back. Setting `"disabled": true` keeps an item in the config but not in the kernel.
 
-Every item has an `id` (8 hex characters) and many have `comment` and `disabled`. Items created by client routing appear in `GET /api/generated`, not in these lists, and can't be edited.
+Every item has an `id` (8 hex characters) and many have `comment` and `disabled`. Items made automatically (the helper rule a health check with a `table` needs) appear in `GET /api/generated`, not in these lists, and can't be edited.
 
 **Interface names** are up to 15 characters with no spaces or slashes. **Addresses** may be IPv4 or IPv6 and are written with a prefix length (`10.0.0.1/16`, `fd00::1/64`); IPv6 works everywhere IPv4 does.
 
@@ -219,7 +219,7 @@ At least one of `state` and `mtu` must be set. `lo` can't be taken down. Deletin
 
 ### Health checks: `/api/checks`
 
-A ping sent out of one interface. Policy rules whose `check` names it are switched off while it is failing.
+A ping sent out of one interface. Policy rules whose `check` names it are switched off while it is failing. A disabled check is not pinged and never counts as failing, so its rules stay on.
 
 | Field | Meaning |
 |---|---|
@@ -232,6 +232,7 @@ A ping sent out of one interface. Policy rules whose `check` names it are switch
 | `fail_after` (number) | Consecutive misses before it is down, 1 to 100. `0` means 3. |
 | `recover_after` (number) | Consecutive replies before it is up again, 1 to 100. `0` means 2. |
 | `comment` | |
+| `disabled` (boolean) | Stop monitoring: no pings, no status, and rules that depend on it stay in the kernel. |
 
 `GET /api/checks/status` returns the latest result of each, keyed by check id:
 
@@ -242,20 +243,7 @@ A ping sent out of one interface. Policy rules whose `check` names it are switch
 
 `state` is `up`, `down`, or `unknown` before the first probe; `error` says why the last try failed.
 
-### Client routing clients: `/api/client-routing/clients`
-
-Sends a client out through a chosen interface; it generates the routes, rules and firewall entries for you. It only takes effect while client routing is switched on (see below).
-
-| Field | Meaning |
-|---|---|
-| `name` | A label. |
-| `src` | The client's IP or network, for example `10.0.0.5` or `10.0.0.0/16`. Required. |
-| `in` | The client-facing interface. Required. |
-| `out` | The exit interface. Required. |
-| `kill_switch` (boolean) | Drop the client's traffic if the exit has no route, instead of leaking out the normal way. |
-| `disabled` | |
-
-`GET /api/generated` returns what client routing produced, as `{"routes": [], "rules": [], "firewall": []}`; each item has a `source` field and can't be changed through the API.
+`GET /api/generated` returns what was made automatically, as `{"routes": [], "rules": [], "firewall": []}`; each item has a `source` field and can't be changed through the API.
 
 ## Other settings
 
@@ -263,8 +251,6 @@ Sends a client out through a chosen interface; it generates the routes, rules an
 |---|---|---|
 | `GET /api/firewall` | | `{"policy": {...}, "rules": [...]}` |
 | `PUT /api/firewall/policy` | `{"input": "accept", "forward": "accept", "output": "accept"}` | What happens to packets no rule decided, per chain: `accept`, `drop` or `reject`. |
-| `GET /api/client-routing` | | `{"enabled": false, "table_base": 200, "priority_base": 10000, "exits": [...], "clients": [...]}` |
-| `PUT /api/client-routing` | `{"enabled": true, "table_base": 200, "priority_base": 10000}` | Switches the feature on or off; the two numbers (`0` for the defaults) are where table and rule numbering start. The clients are changed through their own list. |
 | `PUT /api/sysctl` | `{"ip_forward": true, "ipv6_forward": null, "conntrack_acct": true}` | Keep IP forwarding or connection byte counting on or off. A field you leave out stays as it is; `null` stops managing it. There is no `GET`: read the values from `/api/overview`. |
 | `GET /api/tuning` | | The catalogue of kernel settings (id, group, label, description, allowed values, a recommended value) with `current` (in the kernel now), `managed` (what mini-net-man keeps, empty if not managed), `supported`, and `error`. |
 | `PUT /api/tuning/{id}` | `{"value": "bbr"}` | Manage this setting at that value. An empty `value` stops managing it without undoing the change. `404` for an unknown id. |
@@ -284,7 +270,7 @@ All `GET`, all safe for a read-only token.
 | `GET /api/sockets` | Listening TCP and bound UDP sockets, like `ss -tulnp`: `proto`, `addr`, `port`, `scope` (`all`, `local`, `address`), `user`, and `procs` (`pid`, `name`). |
 | `GET /api/connections` | The connection-tracking table. Parameters: `q` (text search), `proto`, `kind` (`forwarded`, `incoming`, `outgoing`), `state`, `client`, `sort` (`client`, `data`, `expiry`, `dest`), `limit` (default 500, at most 5000). Returns `info` (`available`, `count`, `max`, `acct`), a `summary` (totals, `by_state`, `clients`, `exits`, byte totals) and `conns`. Each connection has the addresses and ports in both directions, `state`, `timeout` (seconds left), optional `bytes_out` and `bytes_in` (when counting is on), and `kind`, `client`, `nat` and `via` worked out by the server. When tracking isn't active, `info.available` is `false` and `conns` is empty. |
 | `GET /api/firewall/ruleset` | `{"desired": "...", "live": "..."}`: the nft text mini-net-man would load, and what is loaded now. |
-| `GET /api/generated` | Routes, rules and firewall entries produced by client routing. |
+| `GET /api/generated` | Routes, rules and firewall entries made automatically (currently the helper rules for health checks). |
 | `GET /api/me` | `{"user": "token:<name>"}` for a token, or the login name for a session. A cheap way to test a token. |
 
 ## Panel, accounts and updates
@@ -337,14 +323,4 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
      -d '{"name":"br0","ports":["eth1","eth2"]}' $URL/api/bridges
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
      -d '{"interface":"br0","address":"192.168.50.1/24"}' $URL/api/addresses
-```
-
-**Send one client out through a different exit.**
-
-```sh
-curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-     -d '{"enabled": true}' $URL/api/client-routing
-curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-     -d '{"name":"laptop","src":"10.0.0.7","in":"wgServer","out":"wgBridge1","kill_switch":true}' \
-     $URL/api/client-routing/clients
 ```

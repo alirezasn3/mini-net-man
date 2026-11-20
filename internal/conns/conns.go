@@ -1,6 +1,6 @@
 // Package conns turns the raw connection-tracking table into something to
 // look at: each entry is classified (forwarded, incoming, outgoing, local),
-// NAT is spelled out, the exit interface and client are named, and the list
+// NAT is spelled out, the exit interface is named, and the list
 // can be filtered, sorted and summarised.
 package conns
 
@@ -16,38 +16,17 @@ import (
 
 // Context is what enrichment needs to know about this machine.
 type Context struct {
-	local   map[netip.Addr]bool   // addresses owned by this machine
-	owner   map[netip.Addr]string // address -> interface that has it
-	clients []clientNet
+	local map[netip.Addr]bool   // addresses owned by this machine
+	owner map[netip.Addr]string // address -> interface that has it
 }
 
-type clientNet struct {
-	net  netip.Prefix
-	name string
-}
-
-// NewContext builds a Context from the interface addresses and the
-// client-routing clients (used to put names on source addresses).
-func NewContext(addrs []kernel.Addr, clients []model.ClientRoute) *Context {
+// NewContext builds a Context from the interface addresses.
+func NewContext(addrs []kernel.Addr) *Context {
 	c := &Context{local: map[netip.Addr]bool{}, owner: map[netip.Addr]string{}}
 	for _, a := range addrs {
 		if p, err := netip.ParsePrefix(a.Address); err == nil {
 			c.local[p.Addr()] = true
 			c.owner[p.Addr()] = a.Interface
-		}
-	}
-	for _, cl := range clients {
-		n, err := model.ParseCIDR(cl.Src, false)
-		if err != nil {
-			continue
-		}
-		ones, _ := n.Mask.Size()
-		if ip, ok := netip.AddrFromSlice(n.IP); ok {
-			name := cl.Name
-			if name == "" {
-				name = cl.Src
-			}
-			c.clients = append(c.clients, clientNet{netip.PrefixFrom(ip.Unmap(), ones), name})
 		}
 	}
 	return c
@@ -71,7 +50,7 @@ func hostPort(ip string, port int) string {
 	return ip + ":" + strconv.Itoa(port)
 }
 
-// Enrich fills in Kind, NAT, Via and Client.
+// Enrich fills in Kind, NAT and Via.
 func (c *Context) Enrich(cn *model.Conn) {
 	// Where the packets really end up is the reply tuple's source, which
 	// differs from the original destination when DNAT redirected them.
@@ -102,15 +81,6 @@ func (c *Context) Enrich(cn *model.Conn) {
 		nat = append(nat, "DNAT "+hostPort(cn.ReplySrc, cn.ReplySrcPort))
 	}
 	cn.NAT = strings.Join(nat, "; ")
-
-	if a, err := netip.ParseAddr(cn.Src); err == nil {
-		for _, cl := range c.clients {
-			if cl.net.Contains(a.Unmap()) {
-				cn.Client = cl.name
-				break
-			}
-		}
-	}
 }
 
 func portIfChanged(reply, orig int) int {
@@ -134,7 +104,6 @@ type Query struct {
 
 type ClientCount struct {
 	Key   string `json:"key"` // the source address
-	Name  string `json:"name,omitempty"`
 	Count int    `json:"count"`
 }
 
@@ -175,7 +144,7 @@ func match(c *model.Conn, q Query, skip string) bool {
 		return false
 	}
 	if t := strings.ToLower(strings.TrimSpace(q.Text)); t != "" {
-		hay := strings.ToLower(strings.Join([]string{c.Src, c.Dst, c.ReplyDst, c.Client, c.Via, c.NAT, c.Proto, c.State, c.Kind,
+		hay := strings.ToLower(strings.Join([]string{c.Src, c.Dst, c.ReplyDst, c.Via, c.NAT, c.Proto, c.State, c.Kind,
 			strconv.Itoa(c.SrcPort), strconv.Itoa(c.DstPort)}, " "))
 		if !strings.Contains(hay, t) {
 			return false
@@ -216,7 +185,7 @@ func Run(all []model.Conn, q Query) (Summary, []model.Conn) {
 		if match(c, q, "client") {
 			cc := clients[c.Src]
 			if cc == nil {
-				cc = &ClientCount{Key: c.Src, Name: c.Client}
+				cc = &ClientCount{Key: c.Src}
 				clients[c.Src] = cc
 			}
 			cc.Count++

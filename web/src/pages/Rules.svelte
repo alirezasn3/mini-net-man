@@ -29,13 +29,14 @@
   const condition = (r) => (r.check ? `only while ${checkName(r.check)} is up` : '')
 
   const stateText = (c) => {
+    if (c.disabled) return 'not running'
     const s = status[c.id]
     if (!s) return 'starting…'
     if (s.state === 'up') return `up · ${s.rtt_ms < 10 ? s.rtt_ms.toFixed(1) : Math.round(s.rtt_ms)} ms`
     if (s.state === 'down') return `down · ${s.error || 'no reply'}`
     return 'checking…'
   }
-  const stateClass = (c) => ({ up: 'bg-accent-600/20 text-accent-300', down: 'bg-red-500/15 text-red-300' })[status[c.id]?.state] ?? 'bg-slate-800 text-slate-400'
+  const stateClass = (c) => ({ up: 'bg-accent-600/20 text-accent-300', down: 'bg-red-500/15 text-red-300' })[c.disabled ? '' : status[c.id]?.state] ?? 'bg-slate-800 text-slate-400'
 
   async function reload() {
     const [l, g] = await Promise.all([api('GET', '/api/live/rules'), api('GET', '/api/generated')])

@@ -102,6 +102,9 @@ func (e *Engine) Issues() []model.Issue {
 func (e *Engine) Start() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if n := legacyClients(e.path); n > 0 {
+		e.log.Warn("client routing was removed: the clients in config.yaml no longer get routes, rules, kill switches or masquerade from it; add them by hand as policy rules, routes and firewall rules (the old section is dropped the next time the config is saved)", "clients", n)
+	}
 	if b, err := os.ReadFile(e.baselinePath()); err == nil {
 		var base model.Config
 		if yaml.Unmarshal(b, &base) == nil {
@@ -213,7 +216,6 @@ func (e *Engine) Update(fn func(c *model.Config) error) ([]model.Issue, error) {
 	if err := fn(&next); err != nil {
 		return nil, err
 	}
-	AllocateExits(&next)
 	if err := next.Validate(); err != nil {
 		return nil, err
 	}
@@ -261,13 +263,7 @@ func (e *Engine) Desired() Desired {
 }
 
 func (e *Engine) desiredLocked() Desired {
-	nets := map[string][]string{}
-	if addrs, err := e.k.ListAddrs(); err == nil {
-		for _, a := range addrs {
-			nets[a.Interface] = append(nets[a.Interface], a.Address)
-		}
-	}
-	return Expand(e.cfg, func(iface string) []string { return NetsOf(nets[iface]) }, e.mon.IsDown)
+	return Expand(e.cfg, e.mon.IsDown)
 }
 
 // ---- safe mode -----------------------------------------------------------

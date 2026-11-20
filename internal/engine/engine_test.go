@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -87,68 +88,6 @@ func TestIssueForMissingInterface(t *testing.T) {
 	})
 	if len(is) != 1 || is[0].ID != "r1" {
 		t.Fatalf("want one issue for r1, got %+v", is)
-	}
-}
-
-func TestClientRouting(t *testing.T) {
-	e, k := newTest(t)
-	mustUpdate(t, e, func(c *model.Config) error {
-		c.ClientRouting.Enabled = true
-		c.ClientRouting.Clients = []model.ClientRoute{
-			{ID: "c1", Name: "alice", Src: "10.0.0.5", In: "wgServer", Out: "wgBridge0", KillSwitch: true},
-			{ID: "c2", Name: "bob", Src: "10.0.0.6", In: "wgServer", Out: "wgBridge1"},
-		}
-		return nil
-	})
-	rules, _ := k.ListRules()
-	var owned []string
-	for _, r := range rules {
-		if r.Owned {
-			owned = append(owned, r.Describe())
-		}
-	}
-	want := []string{"10000: from 10.0.0.5 lookup 200", "10001: from 10.0.0.5 blackhole", "10002: from 10.0.0.6 lookup 201"}
-	if strings.Join(owned, ";") != strings.Join(want, ";") {
-		t.Errorf("rules = %v, want %v", owned, want)
-	}
-	routes, _ := k.ListRoutes()
-	n := 0
-	for _, r := range routes {
-		if r.Owned {
-			n++
-		}
-	}
-	if n != 4 { // 2 defaults + 2 return paths
-		t.Errorf("want 4 owned routes, got %d", n)
-	}
-	text, _ := k.FirewallRuleset()
-	if !strings.Contains(text, "ct state established,related accept") {
-		t.Errorf("no established rule:\n%s", text)
-	}
-
-	// Taking the exit interface down removes its route; coming back up and
-	// reconciling restores it.
-	_ = k.SetLinkUp("wgBridge0", false)
-	_ = k.SetLinkUp("wgBridge0", true)
-	e.Reapply()
-	routes, _ = k.ListRoutes()
-	found := false
-	for _, r := range routes {
-		if r.Owned && r.Dev == "wgBridge0" && r.Dst == "default" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("exit route not restored after link flap")
-	}
-
-	// Disabling the feature leaves no trace.
-	mustUpdate(t, e, func(c *model.Config) error { c.ClientRouting.Enabled = false; return nil })
-	rules, _ = k.ListRules()
-	for _, r := range rules {
-		if r.Owned {
-			t.Errorf("owned rule left: %s", r.Describe())
-		}
 	}
 }
 
@@ -264,46 +203,6 @@ func TestIPv6(t *testing.T) {
 	// A second pass must find nothing to do (mixed-case gateway, implicit v6 metric...).
 	if n := reconcileChanges(e); n != 0 {
 		t.Errorf("reconcile is not idempotent: %d changes on the second pass", n)
-	}
-}
-
-func TestClientRoutingIPv6(t *testing.T) {
-	e, k := newTest(t)
-	mustUpdate(t, e, func(c *model.Config) error {
-		c.ClientRouting.Enabled = true
-		c.ClientRouting.Clients = []model.ClientRoute{
-			{ID: "c4", Name: "v4", Src: "10.0.0.5", In: "wgServer", Out: "wgBridge0", KillSwitch: true},
-			{ID: "c6", Name: "v6", Src: "fd00:10::5", In: "wgServer", Out: "wgBridge0", KillSwitch: true},
-		}
-		return nil
-	})
-	routes, _ := k.ListRoutes()
-	var got []string
-	for _, r := range routes {
-		if r.Owned {
-			got = append(got, r.Dst+" dev "+r.Dev+" table "+r.Table)
-		}
-	}
-	want := map[string]bool{
-		"default dev wgBridge0 table 200":     true, // IPv4 exit
-		"::/0 dev wgBridge0 table 200":        true, // IPv6 exit
-		"10.0.0.0/16 dev wgServer table 200":  true,
-		"fd00:10::/64 dev wgServer table 200": true,
-	}
-	for _, g := range got {
-		delete(want, g)
-	}
-	if len(want) != 0 || len(got) != 4 {
-		t.Errorf("routes = %v, missing %v", got, want)
-	}
-	text, _ := k.FirewallRuleset()
-	for _, w := range []string{"meta nfproto ipv4 oifname \"wgBridge0\" masquerade", "meta nfproto ipv6 oifname \"wgBridge0\" masquerade"} {
-		if !strings.Contains(text, w) {
-			t.Errorf("missing %q in\n%s", w, text)
-		}
-	}
-	if n := reconcileChanges(e); n != 0 {
-		t.Errorf("not idempotent: %d", n)
 	}
 }
 
@@ -435,6 +334,44 @@ func TestConditionalRuleFollowsItsCheck(t *testing.T) {
 	eventually(t, "the rule to come back", func() bool { return ownedRuleAt(k, 300) })
 	if n := e.Converge(); n != 0 {
 		t.Errorf("not idempotent after the switch back: %d changes", n)
+	}
+}
+
+func TestDisabledCheckKeepsItsRulesOn(t *testing.T) {
+	defer health.SetUnitsForTest(10*time.Millisecond, 100*time.Microsecond)()
+	e, k := newTest(t)
+	k.SetPingFail("wgBridge0", true) // the exit is dead, but nobody is looking
+	check := model.Check{ID: "ck", Name: "germany exit", Target: "1.1.1.1", Interface: "wgBridge0", Table: "200",
+		IntervalSecs: 1, TimeoutMs: 1000, FailAfter: 2, RecoverAfter: 2, Disabled: true}
+	mustUpdate(t, e, func(c *model.Config) error {
+		c.Checks = []model.Check{check}
+		c.Rules = []model.Rule{{ID: "guarded", Priority: 300, Src: "10.0.0.0/16", Action: "lookup", Table: "200", Check: "ck"}}
+		return nil
+	})
+	time.Sleep(100 * time.Millisecond)
+	if _, ok := e.CheckStatuses()["ck"]; ok {
+		t.Error("a disabled check is being measured")
+	}
+	if !ownedRuleAt(k, 300) {
+		t.Error("a rule that depends on a disabled check must stay in the kernel")
+	}
+	if ownedRuleAt(k, 1) {
+		t.Error("a disabled check must not create its helper rule")
+	}
+
+	// Enabling it brings the check to life: it finds the dead exit and drops the rule.
+	check.Disabled = false
+	mustUpdate(t, e, func(c *model.Config) error { c.Checks = []model.Check{check}; return nil })
+	eventually(t, "the enabled check to switch the rule off", func() bool { return !ownedRuleAt(k, 300) })
+	if !ownedRuleAt(k, 1) {
+		t.Error("the helper rule is missing once the check is enabled")
+	}
+
+	// Disabling it again puts the rule back.
+	check.Disabled = true
+	mustUpdate(t, e, func(c *model.Config) error { c.Checks = []model.Check{check}; return nil })
+	if !ownedRuleAt(k, 300) {
+		t.Error("disabling the check must put its rule back")
 	}
 }
 
@@ -678,5 +615,38 @@ func TestMarkingValidation(t *testing.T) {
 		if err := tc.r.Validate(); (err == nil) != tc.ok {
 			t.Errorf("%s: err=%v, want ok=%v", name, err, tc.ok)
 		}
+	}
+}
+
+func TestLegacyClientRoutingIsReported(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) string {
+		p := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	old := "client_routing:\n  enabled: true\n  clients:\n    - {id: a, src: 10.0.0.5, in: wgServer, out: wgBridge0}\n    - {id: b, src: 10.0.0.6, in: wgServer, out: wgBridge0, disabled: true}\n"
+	if n := legacyClients(write(old)); n != 1 {
+		t.Errorf("enabled client routing with one active client: got %d", n)
+	}
+	if n := legacyClients(write(strings.Replace(old, "enabled: true", "enabled: false", 1))); n != 0 {
+		t.Errorf("a switched-off feature must not warn: got %d", n)
+	}
+	if n := legacyClients(write("web:\n  port: 8080\n")); n != 0 {
+		t.Errorf("a current config must not warn: got %d", n)
+	}
+	// An old file still loads, and saving drops the removed section.
+	p := write(old)
+	cfg, ok, err := LoadConfig(p)
+	if err != nil || !ok {
+		t.Fatalf("an old config must still load: ok=%v err=%v", ok, err)
+	}
+	if err := SaveConfig(p, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); strings.Contains(string(b), "client_routing") {
+		t.Errorf("the removed section survived a save:\n%s", b)
 	}
 }

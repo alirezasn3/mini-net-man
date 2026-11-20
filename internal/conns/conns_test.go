@@ -16,10 +16,6 @@ func testContext() *Context {
 			{Interface: "wgBridge0", Address: "10.8.0.2/32"},
 			{Interface: "wgBridge1", Address: "10.9.0.2/32"},
 			{Interface: "wgBridge0", Address: "fd00:8::2/128"},
-		},
-		[]model.ClientRoute{
-			{ID: "1", Name: "alice", Src: "10.0.0.5", In: "wgServer", Out: "wgBridge1"},
-			{ID: "2", Name: "lan", Src: "10.0.1.0/24", In: "wgServer", Out: "wgBridge0"},
 		})
 }
 
@@ -34,16 +30,13 @@ func TestEnrichForwardedMasquerade(t *testing.T) {
 	if c.NAT != "SNAT 10.9.0.2" || c.Via != "wgBridge1" {
 		t.Errorf("nat=%q via=%q; the masqueraded address belongs to wgBridge1", c.NAT, c.Via)
 	}
-	if c.Client != "alice" {
-		t.Errorf("client = %q", c.Client)
-	}
 }
 
-func TestEnrichClientNetworkAndIPv6(t *testing.T) {
+func TestEnrichIPv6(t *testing.T) {
 	c := enrich(model.Conn{Proto: "udp", Src: "10.0.1.77", Dst: "8.8.8.8", DstPort: 53, SrcPort: 4000,
 		ReplySrc: "8.8.8.8", ReplySrcPort: 53, ReplyDst: "10.8.0.2", ReplyDstPort: 4000})
-	if c.Client != "lan" || c.Via != "wgBridge0" {
-		t.Errorf("a client given as a /24 should name every address in it: %+v", c)
+	if c.Via != "wgBridge0" {
+		t.Errorf("the masqueraded address belongs to wgBridge0: %+v", c)
 	}
 	v6 := enrich(model.Conn{Proto: "tcp", Src: "fd00:10::5", SrcPort: 43210, Dst: "2606:4700::6810:84e5", DstPort: 443,
 		ReplySrc: "2606:4700::6810:84e5", ReplySrcPort: 443, ReplyDst: "fd00:8::2", ReplyDstPort: 43210})
@@ -113,7 +106,7 @@ func TestRunFilters(t *testing.T) {
 	}
 	// The client list ignores the client filter, so the alternatives stay visible.
 	sum, _ = Run(all, Query{Client: "10.0.0.5", Kind: "forwarded"})
-	if len(sum.Clients) != 3 || sum.Clients[0].Key != "10.0.0.5" || sum.Clients[0].Count != 2 || sum.Clients[0].Name != "alice" {
+	if len(sum.Clients) != 3 || sum.Clients[0].Key != "10.0.0.5" || sum.Clients[0].Count != 2 {
 		t.Errorf("clients: %+v", sum.Clients)
 	}
 	// Likewise the state counts ignore the state filter.
@@ -121,9 +114,9 @@ func TestRunFilters(t *testing.T) {
 	if len(rows) != 1 || sum.ByState["ESTABLISHED"] != 4 || sum.ByState["TIME_WAIT"] != 1 {
 		t.Errorf("state: rows=%d by=%v", len(rows), sum.ByState)
 	}
-	_, rows = Run(all, Query{Text: "alice"})
+	_, rows = Run(all, Query{Text: "10.0.0.5"})
 	if len(rows) != 2 {
-		t.Errorf("text search by client name: %d rows", len(rows))
+		t.Errorf("text search by source address: %d rows", len(rows))
 	}
 	_, rows = Run(all, Query{Text: "wgbridge0"})
 	if len(rows) != 2 {

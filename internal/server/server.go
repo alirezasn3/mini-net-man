@@ -111,7 +111,6 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("GET /api/checks/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.eng.CheckStatuses()) })
 	crud(s, authed, "/api/rules", func(c *model.Config) *[]model.Rule { return &c.Rules }, func(a *model.Rule) *string { return &a.ID })
 	crud(s, authed, "/api/firewall/rules", func(c *model.Config) *[]model.FWRule { return &c.Firewall.Rules }, func(a *model.FWRule) *string { return &a.ID })
-	crud(s, authed, "/api/client-routing/clients", func(c *model.Config) *[]model.ClientRoute { return &c.ClientRouting.Clients }, func(a *model.ClientRoute) *string { return &a.ID })
 
 	authed.HandleFunc("GET /api/firewall", func(w http.ResponseWriter, r *http.Request) {
 		fw := s.eng.Config().Firewall
@@ -124,25 +123,6 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		s.mutate(w, func(c *model.Config) error { c.Firewall.Policy = p; return nil })
-	})
-	authed.HandleFunc("GET /api/client-routing", func(w http.ResponseWriter, r *http.Request) {
-		cr := s.eng.Config().ClientRouting
-		cr.Exits, cr.Clients = orEmpty(cr.Exits), orEmpty(cr.Clients)
-		writeJSON(w, cr)
-	})
-	authed.HandleFunc("PUT /api/client-routing", func(w http.ResponseWriter, r *http.Request) {
-		var in struct {
-			Enabled      bool `json:"enabled"`
-			TableBase    int  `json:"table_base"`
-			PriorityBase int  `json:"priority_base"`
-		}
-		if !decode(w, r, &in) {
-			return
-		}
-		s.mutate(w, func(c *model.Config) error {
-			c.ClientRouting.Enabled, c.ClientRouting.TableBase, c.ClientRouting.PriorityBase = in.Enabled, in.TableBase, in.PriorityBase
-			return nil
-		})
 	})
 	authed.HandleFunc("PUT /api/sysctl", func(w http.ResponseWriter, r *http.Request) {
 		// Start from what is configured, so a request that mentions one
@@ -482,7 +462,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 			"ipv6": map[string]bool{"on": fwd6, "managed": cfg.Sysctl.IPv6Forward != nil},
 		},
 		"detect": detect.Run(), "issues": orEmpty(s.eng.Issues()), "safe": s.eng.SafeStatus(),
-		"counts": map[string]int{"addresses": len(cfg.Addresses), "address_list_entries": len(cfg.AddressLists), "routes": len(cfg.Routes), "rules": len(cfg.Rules), "firewall": len(cfg.Firewall.Rules), "clients": len(cfg.ClientRouting.Clients)},
+		"counts": map[string]int{"addresses": len(cfg.Addresses), "address_list_entries": len(cfg.AddressLists), "routes": len(cfg.Routes), "rules": len(cfg.Rules), "firewall": len(cfg.Firewall.Rules)},
 	})
 }
 
@@ -859,7 +839,7 @@ func (s *Server) connections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	addrs, _ := s.eng.Kernel().ListAddrs()
-	ctx := conns.NewContext(addrs, s.eng.Config().ClientRouting.Clients)
+	ctx := conns.NewContext(addrs)
 	for i := range all {
 		ctx.Enrich(&all[i])
 	}

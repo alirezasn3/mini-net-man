@@ -71,13 +71,16 @@ func probeKey(c model.Check) string {
 	return fmt.Sprintf("%s|%s|%d|%d|%d|%d", c.Target, c.Interface, c.Interval(), c.Timeout(), c.Fails(), c.Recovers())
 }
 
-// Sync starts, restarts and stops checks to match the configured list.
+// Sync starts, restarts and stops checks to match the configured list. A
+// disabled check is not run at all, so it has no status and never counts as down.
 func (m *Monitor) Sync(checks []model.Check) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	want := map[string]model.Check{}
 	for _, c := range checks {
-		want[c.ID] = c
+		if !c.Disabled {
+			want[c.ID] = c
+		}
 	}
 	for id, r := range m.runners {
 		if c, ok := want[id]; !ok || probeKey(c) != probeKey(r.def) {

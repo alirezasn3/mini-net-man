@@ -291,7 +291,7 @@
                 <span class="label mb-0 shrink-0 uppercase tracking-wide sm:hidden">{col.label}</span>
                 <span class="min-w-0 break-words {long ? 'max-sm:text-left' : 'max-sm:text-right'}">
                   {v}
-                  {#if ci === 0}<span class="badge ml-2 bg-accent-600/20 text-accent-300" title="Created by Client Routing">generated</span>{/if}
+                  {#if ci === 0}<span class="badge ml-2 bg-accent-600/20 text-accent-300" title="Created automatically, for example for a health check; it can\u2019t be edited">generated</span>{/if}
                 </span>
               </td>
             {/each}

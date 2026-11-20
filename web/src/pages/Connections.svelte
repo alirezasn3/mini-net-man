@@ -70,7 +70,7 @@
     ['outgoing', 'From this machine'],
   ]
   const columns = $derived([
-    { label: 'Client', render: (c) => c.client || hp(c.src, c.src_port), sub: (c) => (c.client ? hp(c.src, c.src_port) : '') },
+    { label: 'Client', mono: true, render: (c) => hp(c.src, c.src_port) },
     { label: 'Destination', mono: true, render: (c) => hp(c.dst, c.dst_port) },
     { label: 'Proto', mono: true, render: (c) => [c.proto, c.state || (c.unreplied ? 'unreplied' : '')].filter(Boolean).join(' ') },
     // A plain masquerade is just the interface that owns the new address; anything else spells the NAT out.
@@ -145,7 +145,7 @@
           <span class="mr-1 text-xs text-slate-500">Sources</span>
           {#each sum.clients as c}
             <button class="badge cursor-pointer {client === c.key ? 'bg-accent-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}" aria-pressed={client === c.key} onclick={() => (client = client === c.key ? '' : c.key)} title={c.key}>
-              {c.name || c.key} <span class="ml-1 opacity-70">{n(c.count)}</span>
+              {c.key} <span class="ml-1 opacity-70">{n(c.count)}</span>
             </button>
           {/each}
           {#if client && !picked}<button class="badge cursor-pointer bg-accent-600 text-white" onclick={() => (client = '')}>{client} ✕</button>{/if}

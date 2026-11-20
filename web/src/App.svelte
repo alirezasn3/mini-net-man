@@ -10,7 +10,6 @@
   import Ports from './pages/Ports.svelte'
   import Connections from './pages/Connections.svelte'
   import Tuning from './pages/Tuning.svelte'
-  import ClientRouting from './pages/ClientRouting.svelte'
   import Import from './pages/Import.svelte'
   import Settings from './pages/Settings.svelte'
 
@@ -24,7 +23,6 @@
     { path: 'ports', label: 'Ports', comp: Ports },
     { path: 'connections', label: 'Connections', comp: Connections },
     { path: 'tuning', label: 'Tuning', comp: Tuning },
-    { path: 'client-routing', label: 'Client routing', comp: ClientRouting },
     { path: 'import', label: 'Import', comp: Import },
     { path: 'settings', label: 'Settings', comp: Settings },
   ]

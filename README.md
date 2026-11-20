@@ -12,9 +12,8 @@ A small web-managed Linux networking tool in the style of MikroTik RouterOS. One
 - **MSS clamping**: shrink the TCP segment size of connections passing through, so a tunnel or PPPoE exit with a smaller MTU doesn't stall large transfers (MikroTik's `change-mss` mangle rule).
 - **Connection marking**: tag connections by the interface they arrived on and route replies by that tag, for a machine with several links that carry the same client addresses.
 - **Health checks**: ping an address out of an interface, and make policy rules depend on the result. A rule is switched off while its check fails (say, an exit tunnel that has silently died) and back on when it recovers.
-- **Client routing** (optional): send chosen clients out through a chosen interface. It only generates ordinary routes, rules and firewall entries, shown as *generated*.
 - **Ports**: which program is listening on which port (like `ss -tulnp`), and whether it is reachable from every interface or only this machine.
-- **Connections**: the kernel's connection-tracking table: every connection, including your VPN clients' traffic passing through. Each is labelled with its client, the exit interface and the NAT applied, and optionally bytes up and down. Filter by client, state or protocol.
+- **Connections**: the kernel's connection-tracking table: every connection, including your VPN clients' traffic passing through. Each shows its source, the exit interface and the NAT applied, and optionally bytes up and down. Filter by client, state or protocol.
 - **Tuning**: a curated set of kernel settings for a VPN gateway or router: BBR congestion control, queue discipline, socket buffers, MTU probing, connection-tracking size and timeouts, reverse-path filtering, ICMP redirects. Each has an explanation and a recommended value.
 - **Import**: adopts existing `ip rule`/`ip route`, `iptables-save`, ufw and iptables-persistent rules, and lists the ones it can't convert with the reason for each (a module with no equivalent, a jump to another chain, a negated match, ufw rate limiting, ...).
 - **Safe mode**: changes revert automatically unless you confirm, or if the browser disconnects.
@@ -77,6 +76,7 @@ A tag with a dash (`v1.0.0-rc1`) is published as a pre-release and is not offere
 Add a health check on the **Policy rules** page (name, address to ping, interface to ping out of), then pick it under a rule's **Condition**. The check sends one ICMP echo out of that interface every few seconds. After `fail_after` misses in a row (default 3) it is *down* and every rule that depends on it is taken out of the kernel, so traffic falls through to the next rule, for instance back to the main table. After `recover_after` replies in a row (default 2) it is *up* again and the rules return. A single lost ping changes nothing.
 
 - The configured rule is never edited; it just isn't in the kernel while the check is down. The rule list shows an **off: check failing** chip.
+- **Disable** on a check stops it: it is not pinged, never counts as down, and the rules that depend on it stay in the kernel. Enable it again to resume monitoring.
 - A check that hasn't been measured yet (just after a restart) counts as up, so a restart never switches rules off by itself; a dead exit is noticed within `fail_after` x `interval` seconds.
 - Ping something that should always answer and sits beyond the exit, such as `1.1.1.1`, so it proves the whole path rather than just the tunnel's first hop.
 - The ping is bound to the interface, so it goes out through it even if no route covers the target, which is what a WireGuard exit with `Table = off` needs. If an exit is reached through a **gateway** whose route is in a custom routing table, put that table in the check's *Routing table* field: mini-net-man then adds a helper rule `oif <interface> lookup <table>` (priority 1, shown as *generated*) that applies only to the check's own pings.
@@ -181,12 +181,12 @@ The essentials:
 
 - The secret is shown once and only its hash is stored. A **read-only** token can use `GET` and nothing else. No token can manage logins or tokens, change the allowed IPs, or install updates.
 - The caller's address must be in **Allowed client IPs**, and wrong tokens count towards the same lockout as wrong passwords (5 in a minute). Changes made with a token are logged with its name. Browsers on other sites can't call it (no CORS): use it from a server or script, and use TLS (`tls_cert`/`tls_key`) when the token crosses an untrusted network.
-- Every list (`routes`, `rules`, `addresses`, `bridges`, `interfaces`, `checks`, `firewall/rules`, `client-routing/clients`) has the same calls: `GET`, `POST` (returns the new `id`), `PUT /{id}` (replaces the item), `DELETE /{id}` and `POST /{id}/move`.
+- Every list (`routes`, `rules`, `addresses`, `bridges`, `interfaces`, `checks`, `firewall/rules`) has the same calls: `GET`, `POST` (returns the new `id`), `PUT /{id}` (replaces the item), `DELETE /{id}` and `POST /{id}/move`.
 - A change is validated first (`400` and nothing saved if it is wrong), then applied. Items the kernel can't apply yet are returned as `issues` and retried.
 
 ## IPv6
 
-Everything works for both families. The family of a route comes from its destination (`::/0` is the IPv6 default; `default` with an IPv6 gateway also works). The family of a policy rule comes from its `from`/`to`, or its Family field. Firewall rules live in one `inet` table: a rule with no address and no Family applies to **both** families, so set Family to `IPv4` for things like a v4-only masquerade. Client routing routes each client within its own family. Imported iptables/ufw rules are pinned to the family they came from. Serve the panel over IPv6 by setting `listen` to `::`.
+Everything works for both families. The family of a route comes from its destination (`::/0` is the IPv6 default; `default` with an IPv6 gateway also works). The family of a policy rule comes from its `from`/`to`, or its Family field. Firewall rules live in one `inet` table: a rule with no address and no Family applies to **both** families, so set Family to `IPv4` for things like a v4-only masquerade. Imported iptables/ufw rules are pinned to the family they came from. Serve the panel over IPv6 by setting `listen` to `::`.
 
 Enabling IPv6 forwarding makes Linux ignore router advertisements on interfaces where `accept_ra` is 1. If this machine gets its IPv6 address by SLAAC, set `accept_ra=2` on that interface first.
 

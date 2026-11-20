@@ -165,3 +165,36 @@ func TestSyncAddsRestartsAndRemoves(t *testing.T) {
 		t.Errorf("pings continued after Stop: %d -> %d", before, after)
 	}
 }
+
+func TestDisabledCheckIsNotRun(t *testing.T) {
+	fast(t)
+	p := &fakePinger{}
+	p.set("dead", true)
+	m := New(p, nil)
+	defer m.Stop()
+
+	off := chk("d", "dead")
+	off.Disabled = true
+	m.Sync([]model.Check{off})
+	time.Sleep(80 * time.Millisecond)
+	if n := p.calls.Load(); n != 0 {
+		t.Errorf("a disabled check was pinged %d times", n)
+	}
+	if _, ok := m.Statuses()["d"]; ok {
+		t.Error("a disabled check has a status")
+	}
+	if m.IsDown("d") {
+		t.Error("a disabled check is never down")
+	}
+
+	// Enabling it starts the pings; disabling it again stops them and clears the status.
+	m.Sync([]model.Check{chk("d", "dead")})
+	eventually(t, "the enabled check to be marked down", func() bool { return m.IsDown("d") })
+	m.Sync([]model.Check{off})
+	if m.IsDown("d") {
+		t.Error("a check that was disabled is still down")
+	}
+	if _, ok := m.Statuses()["d"]; ok {
+		t.Error("a disabled check kept its status")
+	}
+}

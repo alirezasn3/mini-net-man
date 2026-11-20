@@ -754,17 +754,6 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("update.repo must look like owner/name, got %q", r)
 		}
 	}
-	for _, cl := range c.ClientRouting.Clients {
-		if err := check("client route", cl.ID); err != nil {
-			return err
-		}
-		if _, err := ParseCIDR(cl.Src, false); err != nil {
-			return fmt.Errorf("client %s: %w", cl.Name, err)
-		}
-		if cl.In == "" || cl.Out == "" || !validIface(cl.In) || !validIface(cl.Out) {
-			return fmt.Errorf("client %s: in and out interfaces are required", cl.Name)
-		}
-	}
 	return nil
 }
 

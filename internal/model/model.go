@@ -12,18 +12,17 @@ const (
 
 // Config is the on-disk source of truth (config.yaml).
 type Config struct {
-	Web           Web            `yaml:"web" json:"web"`
-	Sysctl        Sysctl         `yaml:"sysctl" json:"sysctl"`
-	AddressLists  []AddressEntry `yaml:"address_lists,omitempty" json:"address_lists"`
-	Bridges       []Bridge       `yaml:"bridges,omitempty" json:"bridges"`
-	Interfaces    []LinkSetting  `yaml:"interfaces,omitempty" json:"interfaces"`
-	Addresses     []Address      `yaml:"addresses" json:"addresses"`
-	Routes        []Route        `yaml:"routes" json:"routes"`
-	Rules         []Rule         `yaml:"rules" json:"rules"`
-	Checks        []Check        `yaml:"checks" json:"checks"`
-	Firewall      Firewall       `yaml:"firewall" json:"firewall"`
-	ClientRouting ClientRouting  `yaml:"client_routing" json:"client_routing"`
-	Update        Update         `yaml:"update" json:"update"`
+	Web          Web            `yaml:"web" json:"web"`
+	Sysctl       Sysctl         `yaml:"sysctl" json:"sysctl"`
+	AddressLists []AddressEntry `yaml:"address_lists,omitempty" json:"address_lists"`
+	Bridges      []Bridge       `yaml:"bridges,omitempty" json:"bridges"`
+	Interfaces   []LinkSetting  `yaml:"interfaces,omitempty" json:"interfaces"`
+	Addresses    []Address      `yaml:"addresses" json:"addresses"`
+	Routes       []Route        `yaml:"routes" json:"routes"`
+	Rules        []Rule         `yaml:"rules" json:"rules"`
+	Checks       []Check        `yaml:"checks" json:"checks"`
+	Firewall     Firewall       `yaml:"firewall" json:"firewall"`
+	Update       Update         `yaml:"update" json:"update"`
 }
 
 // Update configures self-update from GitHub Releases.
@@ -242,36 +241,6 @@ type FWRule struct {
 	Source    string `yaml:"-" json:"source,omitempty"`
 }
 
-// ClientRouting is the optional convenience feature that sends chosen clients
-// out through a chosen interface. It is expanded into plain routes, rules and
-// firewall entries (see engine.Expand); nothing else depends on it.
-type ClientRouting struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
-	// First routing table number handed out to output interfaces.
-	TableBase int `yaml:"table_base,omitempty" json:"table_base"`
-	// Priority of the first generated ip rule.
-	PriorityBase int `yaml:"priority_base,omitempty" json:"priority_base"`
-	// Tables already allocated to output interfaces (stable across edits).
-	Exits   []Exit        `yaml:"exits,omitempty" json:"exits"`
-	Clients []ClientRoute `yaml:"clients,omitempty" json:"clients"`
-}
-
-type Exit struct {
-	Interface string `yaml:"interface" json:"interface"`
-	Table     int    `yaml:"table" json:"table"`
-}
-
-// ClientRoute sends traffic from Src (arriving on In) out through Out.
-type ClientRoute struct {
-	ID         string `yaml:"id" json:"id"`
-	Name       string `yaml:"name,omitempty" json:"name"`
-	Src        string `yaml:"src" json:"src"` // client IP or CIDR
-	In         string `yaml:"in" json:"in"`   // client-facing interface (e.g. wgServer)
-	Out        string `yaml:"out" json:"out"` // exit interface (e.g. wgBridge1)
-	KillSwitch bool   `yaml:"kill_switch" json:"kill_switch"`
-	Disabled   bool   `yaml:"disabled,omitempty" json:"disabled"`
-}
-
 // Link is a live network interface as seen by the kernel.
 type Link struct {
 	Name    string   `json:"name"`
@@ -342,10 +311,9 @@ type Conn struct {
 	BytesIn  uint64 `json:"bytes_in,omitempty"`  // reply direction
 
 	// Filled in by the server.
-	Kind   string `json:"kind,omitempty"`   // forwarded | incoming | outgoing
-	Client string `json:"client,omitempty"` // name of the matching client-routing client
-	NAT    string `json:"nat,omitempty"`    // "SNAT 10.8.0.2" / "DNAT 10.0.0.9:443"
-	Via    string `json:"via,omitempty"`    // interface that owns the translated source address
+	Kind string `json:"kind,omitempty"` // forwarded | incoming | outgoing
+	NAT  string `json:"nat,omitempty"`  // "SNAT 10.8.0.2" / "DNAT 10.0.0.9:443"
+	Via  string `json:"via,omitempty"`  // interface that owns the translated source address
 }
 
 // ConntrackInfo describes the state of connection tracking itself.
@@ -375,4 +343,7 @@ type Check struct {
 	FailAfter    int    `yaml:"fail_after,omitempty" json:"fail_after"`       // consecutive misses before "down" (default 3)
 	RecoverAfter int    `yaml:"recover_after,omitempty" json:"recover_after"` // consecutive replies before "up" again (default 2)
 	Comment      string `yaml:"comment,omitempty" json:"comment"`
+	// Disabled stops the check: it is not pinged, is never reported down, and
+	// rules that depend on it stay in the kernel.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled"`
 }

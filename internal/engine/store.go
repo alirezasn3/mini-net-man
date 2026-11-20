@@ -27,6 +27,35 @@ func LoadConfig(path string) (cfg model.Config, ok bool, err error) {
 	return cfg, true, nil
 }
 
+// legacyClients counts the clients that a config file written by an older
+// version still lists under client_routing, a feature that has been removed.
+// Their routes, rules and kill switches are no longer created, so the caller
+// should say so rather than let the traffic change route unnoticed.
+func legacyClients(path string) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	var old struct {
+		ClientRouting struct {
+			Enabled bool `yaml:"enabled"`
+			Clients []struct {
+				Disabled bool `yaml:"disabled"`
+			} `yaml:"clients"`
+		} `yaml:"client_routing"`
+	}
+	if yaml.Unmarshal(b, &old) != nil || !old.ClientRouting.Enabled {
+		return 0
+	}
+	n := 0
+	for _, c := range old.ClientRouting.Clients {
+		if !c.Disabled {
+			n++
+		}
+	}
+	return n
+}
+
 // SaveConfig writes the config atomically with 0600 permissions.
 func SaveConfig(path string, cfg model.Config) error {
 	b, err := yaml.Marshal(cfg)
